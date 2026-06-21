@@ -1,0 +1,65 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  units     Unit[]
+}
+
+model Unit {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  address     String
+  city        String
+  province    String
+  postalCode  String
+  rent        Float
+  bedrooms    Int
+  bathrooms   Float
+  sqft        Int?
+  description String
+  title       String
+  amenities   String    @default("[]")
+  photos      String    @default("[]")
+  videoUrl    String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  listings    Listing[]
+}
+
+model Listing {
+  id           String    @id @default(cuid())
+  unitId       String
+  unit         Unit      @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  platform     String
+  groupId      String?
+  groupName    String?
+  fbPostId     String?
+  status       String    @default("pending")
+  lastPostedAt DateTime?
+  nextPostAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model FbAccount {
+  id          String   @id @default(cuid())
+  clerkId     String   @unique
+  email       String
+  passwordEnc String
+  groups      String   @default("[]")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
