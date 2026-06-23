@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { decrypt } from "@/lib/crypto";
 import { postToMarketplace, postToGroups } from "@/lib/fb-automation";
 
 export async function GET(req: NextRequest) {
@@ -11,21 +10,17 @@ export async function GET(req: NextRequest) {
 
   const now = new Date();
 
-  // Find all listings due for reposting
   const dueListings = await prisma.listing.findMany({
     where: {
       status: "active",
       nextPostAt: { lte: now },
       unit: { isActive: true },
     },
-    include: {
-      unit: true,
-    },
+    include: { unit: true },
   });
 
   const results: { listingId: string; success: boolean; error?: string }[] = [];
 
-  // Group by user (via unit -> user)
   const byUser = new Map<string, typeof dueListings>();
   for (const listing of dueListings) {
     const user = await prisma.user.findUnique({ where: { id: listing.unit.userId } });
@@ -37,9 +32,9 @@ export async function GET(req: NextRequest) {
 
   for (const [clerkId, listings] of byUser) {
     const fbAccount = await prisma.fbAccount.findUnique({ where: { clerkId } });
-    if (!fbAccount) continue;
+    if (!fbAccount?.sessionState) continue;
 
-    const credentials = { email: fbAccount.email, password: decrypt(fbAccount.passwordEnc) };
+    const sessionState = JSON.parse(fbAccount.sessionState);
     const groups = JSON.parse(fbAccount.groups);
 
     for (const listing of listings) {
@@ -62,7 +57,7 @@ export async function GET(req: NextRequest) {
         let success = false;
 
         if (listing.platform === "marketplace") {
-          const result = await postToMarketplace(credentials, unitData);
+          const result = await postToMarketplace(sessionState, unitData);
           success = result.success;
           if (result.success && result.postId) {
             await prisma.listing.update({
@@ -73,7 +68,7 @@ export async function GET(req: NextRequest) {
         } else if (listing.platform === "group" && listing.groupId) {
           const group = groups.find((g: { id: string }) => g.id === listing.groupId);
           if (group) {
-            const groupResults = await postToGroups(credentials, unitData, [group]);
+            const groupResults = await postToGroups(sessionState, unitData, [group]);
             success = groupResults[0]?.success || false;
           }
         }
@@ -89,7 +84,11 @@ export async function GET(req: NextRequest) {
 
         results.push({ listingId: listing.id, success });
       } catch (err) {
-        results.push({ listingId: listing.id, success: false, error: err instanceof Error ? err.message : "Unknown" });
+        results.push({
+          listingId: listing.id,
+          success: false,
+          error: err instanceof Error ? err.message : "Unknown",
+        });
       }
     }
   }

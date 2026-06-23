@@ -7,15 +7,15 @@ import "./globals.css";
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Rently — Auto-post your rental to Facebook",
-  description: "The fastest way to rent your unit. Auto-post to Facebook Marketplace and Groups daily.",
+  title: "Rently — Rental management for independent landlords",
+  description: "AI-written listings, Facebook auto-posting, maintenance tracking, and tax-ready expenses. Built for landlords with 1–20 units.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <ClerkProvider appearance={{ theme: shadcn }}>
-      <html lang="en" className={`${geistSans.variable} h-full antialiased`}>
-        <body className="min-h-full bg-slate-50 text-slate-900">{children}</body>
+      <html lang="en" className={geistSans.variable} style={{ background: "#ffffff" }}>
+        <body style={{ background: "#ffffff", color: "#0f172a", minHeight: "100vh" }}>{children}</body>
       </html>
     </ClerkProvider>
   );

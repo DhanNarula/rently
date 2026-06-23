@@ -1,9 +1,4 @@
-import { chromium, Browser, Page } from "playwright";
-
-interface FbCredentials {
-  email: string;
-  password: string;
-}
+import { chromium, Browser } from "playwright";
 
 interface RentalUnit {
   id: string;
@@ -29,33 +24,18 @@ async function humanDelay(min = 800, max = 2200) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-async function loginToFacebook(page: Page, credentials: FbCredentials): Promise<boolean> {
-  try {
-    await page.goto("https://www.facebook.com/login", { waitUntil: "domcontentloaded", timeout: 30000 });
-    await humanDelay();
-
-    await page.fill("#email", credentials.email);
-    await humanDelay(400, 900);
-    await page.fill("#pass", credentials.password);
-    await humanDelay(500, 1200);
-    await page.click('[name="login"]');
-
-    await page.waitForURL(/facebook\.com\/(home|feed|\?|$)/, { timeout: 15000 }).catch(() => {});
-    await humanDelay(2000, 3500);
-
-    // Check if login succeeded
-    const url = page.url();
-    if (url.includes("login") || url.includes("checkpoint")) {
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
+function makeContext(browser: Browser, sessionState: object) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return browser.newContext({
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    viewport: { width: 1280, height: 800 },
+    storageState: sessionState as any,
+  });
 }
 
 export async function postToMarketplace(
-  credentials: FbCredentials,
+  sessionState: object,
   unit: RentalUnit
 ): Promise<{ success: boolean; postId?: string; error?: string }> {
   let browser: Browser | null = null;
@@ -66,23 +46,22 @@ export async function postToMarketplace(
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"],
     });
 
-    const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      viewport: { width: 1280, height: 800 },
-    });
-
+    const context = await makeContext(browser, sessionState);
     const page = await context.newPage();
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     });
 
-    const loggedIn = await loginToFacebook(page, credentials);
-    if (!loggedIn) {
-      return { success: false, error: "Login failed — check your Facebook credentials in Settings." };
-    }
-
-    await page.goto("https://www.facebook.com/marketplace/create/rental", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto("https://www.facebook.com/marketplace/create/rental", {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
     await humanDelay(2000, 3500);
+
+    // Verify session is still valid
+    if (page.url().includes("/login")) {
+      return { success: false, error: "Facebook session expired — reconnect in Settings." };
+    }
 
     // Upload photos
     for (const photoUrl of unit.photos.slice(0, 10)) {
@@ -110,14 +89,18 @@ export async function postToMarketplace(
     } catch {}
 
     // Fill rent
-    const rentInput = page.locator('input[placeholder*="price" i], input[aria-label*="price" i], input[aria-label*="rent" i]').first();
+    const rentInput = page
+      .locator('input[placeholder*="price" i], input[aria-label*="price" i], input[aria-label*="rent" i]')
+      .first();
     if (await rentInput.isVisible()) {
       await rentInput.fill(String(unit.rent));
       await humanDelay();
     }
 
     // Fill address
-    const addressInput = page.locator('input[placeholder*="address" i], input[aria-label*="address" i]').first();
+    const addressInput = page
+      .locator('input[placeholder*="address" i], input[aria-label*="address" i]')
+      .first();
     if (await addressInput.isVisible()) {
       await addressInput.fill(`${unit.address}, ${unit.city}, ${unit.province} ${unit.postalCode}`);
       await humanDelay(1000, 2000);
@@ -129,33 +112,47 @@ export async function postToMarketplace(
     }
 
     // Fill bedrooms
-    const bedroomSelect = page.locator('select[aria-label*="bedroom" i], div[aria-label*="bedroom" i]').first();
+    const bedroomSelect = page
+      .locator('select[aria-label*="bedroom" i], div[aria-label*="bedroom" i]')
+      .first();
     if (await bedroomSelect.isVisible()) {
       try {
         await bedroomSelect.selectOption(String(unit.bedrooms));
       } catch {
         await bedroomSelect.click();
         await humanDelay();
-        await page.locator('div[role="option"]').filter({ hasText: new RegExp(`^${unit.bedrooms}`) }).first().click();
+        await page
+          .locator('div[role="option"]')
+          .filter({ hasText: new RegExp(`^${unit.bedrooms}`) })
+          .first()
+          .click();
       }
       await humanDelay();
     }
 
     // Fill bathrooms
-    const bathroomSelect = page.locator('select[aria-label*="bathroom" i], div[aria-label*="bathroom" i]').first();
+    const bathroomSelect = page
+      .locator('select[aria-label*="bathroom" i], div[aria-label*="bathroom" i]')
+      .first();
     if (await bathroomSelect.isVisible()) {
       try {
         await bathroomSelect.selectOption(String(unit.bathrooms));
       } catch {
         await bathroomSelect.click();
         await humanDelay();
-        await page.locator('div[role="option"]').filter({ hasText: new RegExp(`^${unit.bathrooms}`) }).first().click();
+        await page
+          .locator('div[role="option"]')
+          .filter({ hasText: new RegExp(`^${unit.bathrooms}`) })
+          .first()
+          .click();
       }
       await humanDelay();
     }
 
     // Fill description
-    const descInput = page.locator('textarea[aria-label*="description" i], div[aria-label*="description" i][role="textbox"]').first();
+    const descInput = page
+      .locator('textarea[aria-label*="description" i], div[aria-label*="description" i][role="textbox"]')
+      .first();
     if (await descInput.isVisible()) {
       await descInput.click();
       await humanDelay();
@@ -189,7 +186,7 @@ export async function postToMarketplace(
 }
 
 export async function postToGroups(
-  credentials: FbCredentials,
+  sessionState: object,
   unit: RentalUnit,
   groups: Group[]
 ): Promise<{ groupId: string; success: boolean; error?: string }[]> {
@@ -202,29 +199,37 @@ export async function postToGroups(
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"],
     });
 
-    const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      viewport: { width: 1280, height: 800 },
-    });
-
+    const context = await makeContext(browser, sessionState);
     const page = await context.newPage();
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     });
 
-    const loggedIn = await loginToFacebook(page, credentials);
-    if (!loggedIn) {
-      return groups.map((g) => ({ groupId: g.id, success: false, error: "Login failed" }));
+    // Verify session is still valid
+    await page.goto("https://www.facebook.com/", { waitUntil: "domcontentloaded", timeout: 15_000 });
+    if (page.url().includes("/login")) {
+      return groups.map((g) => ({
+        groupId: g.id,
+        success: false,
+        error: "Facebook session expired — reconnect in Settings.",
+      }));
     }
 
     const postText = `🏠 ${unit.title}\n\n💰 $${unit.rent}/month\n🛏 ${unit.bedrooms} bed | 🛁 ${unit.bathrooms} bath\n📍 ${unit.address}, ${unit.city}, ${unit.province}\n\n${unit.description}`;
 
     for (const group of groups) {
       try {
-        await page.goto(`https://www.facebook.com/groups/${group.id}`, { waitUntil: "domcontentloaded", timeout: 20000 });
+        await page.goto(`https://www.facebook.com/groups/${group.id}`, {
+          waitUntil: "domcontentloaded",
+          timeout: 20_000,
+        });
         await humanDelay(2000, 3500);
 
-        const writeBox = page.locator('div[data-pagelet="GroupComposer"] div[role="button"], span:has-text("Write something"), div[aria-label*="Write something"]').first();
+        const writeBox = page
+          .locator(
+            'div[data-pagelet="GroupComposer"] div[role="button"], span:has-text("Write something"), div[aria-label*="Write something"]'
+          )
+          .first();
         if (await writeBox.isVisible({ timeout: 5000 })) {
           await writeBox.click();
           await humanDelay(1000, 2000);
@@ -237,9 +242,10 @@ export async function postToGroups(
           await textArea.fill(postText);
           await humanDelay(1000, 2000);
 
-          // Try to attach first photo
           if (unit.photos.length > 0) {
-            const photoBtn = page.locator('div[aria-label*="Photo/Video"], span:has-text("Photo/Video")').first();
+            const photoBtn = page
+              .locator('div[aria-label*="Photo/Video"], span:has-text("Photo/Video")')
+              .first();
             if (await photoBtn.isVisible({ timeout: 3000 })) {
               await photoBtn.click();
               await humanDelay(1000, 1500);
@@ -262,10 +268,18 @@ export async function postToGroups(
             results.push({ groupId: group.id, success: false, error: "Post button not found" });
           }
         } else {
-          results.push({ groupId: group.id, success: false, error: "Composer not found — may need group membership" });
+          results.push({
+            groupId: group.id,
+            success: false,
+            error: "Composer not found — may need group membership",
+          });
         }
       } catch (err) {
-        results.push({ groupId: group.id, success: false, error: err instanceof Error ? err.message : "Unknown" });
+        results.push({
+          groupId: group.id,
+          success: false,
+          error: err instanceof Error ? err.message : "Unknown",
+        });
       }
 
       await humanDelay(3000, 6000);
@@ -275,6 +289,10 @@ export async function postToGroups(
     return results;
   } catch (err) {
     await browser?.close();
-    return groups.map((g) => ({ groupId: g.id, success: false, error: err instanceof Error ? err.message : "Unknown" }));
+    return groups.map((g) => ({
+      groupId: g.id,
+      success: false,
+      error: err instanceof Error ? err.message : "Unknown",
+    }));
   }
 }

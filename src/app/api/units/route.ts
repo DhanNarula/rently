@@ -22,32 +22,41 @@ export async function POST(req: NextRequest) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await req.json();
+  try {
+    const body = await req.json();
 
-  let user = await prisma.user.findUnique({ where: { clerkId: userId } });
-  if (!user) {
-    user = await prisma.user.create({
-      data: { clerkId: userId, email: body.email || `${userId}@placeholder.com` },
+    let user = await prisma.user.findUnique({ where: { clerkId: userId } });
+    if (!user) {
+      user = await prisma.user.create({
+        data: { clerkId: userId, email: body.email || `${userId}@placeholder.com` },
+      });
+    }
+
+    const unit = await prisma.unit.create({
+      data: {
+        userId: user.id,
+        address: body.address,
+        city: body.city,
+        province: body.province,
+        postalCode: body.postalCode || "",
+        rent: parseFloat(body.rent),
+        bedrooms: Math.round(Number(body.bedrooms)),
+        bathrooms: parseFloat(body.bathrooms),
+        sqft: body.sqft ? parseInt(body.sqft) : null,
+        title: body.title,
+        description: body.description,
+        amenities: JSON.stringify(body.amenities || []),
+        photos: JSON.stringify(body.photos || []),
+        availableFrom: body.availableFrom ? new Date(body.availableFrom) : null,
+      },
     });
+
+    return NextResponse.json(unit, { status: 201 });
+  } catch (e) {
+    console.error("POST /api/units error:", e);
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Failed to save unit" },
+      { status: 500 }
+    );
   }
-
-  const unit = await prisma.unit.create({
-    data: {
-      userId: user.id,
-      address: body.address,
-      city: body.city,
-      province: body.province,
-      postalCode: body.postalCode,
-      rent: parseFloat(body.rent),
-      bedrooms: parseInt(body.bedrooms),
-      bathrooms: parseFloat(body.bathrooms),
-      sqft: body.sqft ? parseInt(body.sqft) : null,
-      title: body.title,
-      description: body.description,
-      amenities: JSON.stringify(body.amenities || []),
-      photos: JSON.stringify(body.photos || []),
-    },
-  });
-
-  return NextResponse.json(unit, { status: 201 });
 }

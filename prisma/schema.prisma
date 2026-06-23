@@ -8,35 +8,40 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  clerkId   String   @unique
-  email     String   @unique
+  id        String     @id @default(cuid())
+  clerkId   String     @unique
+  email     String     @unique
   name      String?
-  createdAt DateTime @default(now())
+  createdAt DateTime   @default(now())
   units     Unit[]
+  expenses  Expense[]
 }
 
 model Unit {
-  id          String    @id @default(cuid())
-  userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  address     String
-  city        String
-  province    String
-  postalCode  String
-  rent        Float
-  bedrooms    Int
-  bathrooms   Float
-  sqft        Int?
-  description String
-  title       String
-  amenities   String    @default("[]")
-  photos      String    @default("[]")
-  videoUrl    String?
-  isActive    Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  listings    Listing[]
+  id           String               @id @default(cuid())
+  userId       String
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  address      String
+  city         String
+  province     String
+  postalCode   String
+  rent         Float
+  bedrooms     Int
+  bathrooms    Float
+  sqft         Int?
+  description  String
+  title        String
+  amenities    String               @default("[]")
+  photos       String               @default("[]")
+  videoUrl     String?
+  availableFrom DateTime?
+  isActive     Boolean              @default(true)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  listings     Listing[]
+  tenants      Tenant[]
+  maintenance  MaintenanceRequest[]
+  expenses     Expense[]
 }
 
 model Listing {
@@ -54,12 +59,61 @@ model Listing {
   updatedAt    DateTime  @updatedAt
 }
 
+model Tenant {
+  id         String               @id @default(cuid())
+  unitId     String
+  unit       Unit                 @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  name       String
+  email      String?
+  phone      String?
+  leaseStart DateTime?
+  leaseEnd   DateTime?
+  rentAmount Float
+  notes      String?
+  createdAt  DateTime             @default(now())
+  maintenance MaintenanceRequest[]
+}
+
+model MaintenanceRequest {
+  id          String    @id @default(cuid())
+  unitId      String
+  unit        Unit      @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  tenantId    String?
+  tenant      Tenant?   @relation(fields: [tenantId], references: [id])
+  title       String
+  description String?
+  category    String    @default("general")
+  priority    String    @default("medium")
+  status      String    @default("open")
+  cost        Float?
+  vendor      String?
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Expense {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  unitId     String?
+  unit       Unit?    @relation(fields: [unitId], references: [id])
+  title      String
+  amount     Float
+  category   String
+  date       DateTime
+  receiptUrl String?
+  notes      String?
+  taxYear    Int
+  createdAt  DateTime @default(now())
+}
+
 model FbAccount {
-  id          String   @id @default(cuid())
-  clerkId     String   @unique
-  email       String
-  passwordEnc String
-  groups      String   @default("[]")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(cuid())
+  clerkId      String   @unique
+  email        String
+  sessionState String?
+  groups       String   @default("[]")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
