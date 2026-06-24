@@ -22,7 +22,6 @@ export async function POST(req: NextRequest) {
   const unit = await prisma.unit.findFirst({ where: { id: unitId, userId: user.id } });
   if (!unit) return NextResponse.json({ error: "Unit not found" }, { status: 404 });
 
-  const sessionState = JSON.parse(fbAccount.sessionState);
   const unitData = {
     id: unit.id,
     title: unit.title,
@@ -40,54 +39,29 @@ export async function POST(req: NextRequest) {
   const results: Record<string, unknown> = {};
 
   if (doMarketplace) {
-    const result = await postToMarketplace(sessionState, unitData);
+    const result = await postToMarketplace(userId, unitData);
     results.marketplace = result;
 
     if (result.success) {
       await prisma.listing.upsert({
         where: { id: `mp-${unitId}` },
-        update: {
-          status: "active",
-          fbPostId: result.postId,
-          lastPostedAt: new Date(),
-          nextPostAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        },
-        create: {
-          id: `mp-${unitId}`,
-          unitId,
-          platform: "marketplace",
-          status: "active",
-          fbPostId: result.postId,
-          lastPostedAt: new Date(),
-          nextPostAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        },
+        update: { status: "active", fbPostId: result.postId, lastPostedAt: new Date(), nextPostAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+        create: { id: `mp-${unitId}`, unitId, platform: "marketplace", status: "active", fbPostId: result.postId, lastPostedAt: new Date(), nextPostAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
       });
     }
   }
 
   if (doGroups) {
     const groups = JSON.parse(fbAccount.groups);
-    const groupResults = await postToGroups(sessionState, unitData, groups);
+    const groupResults = await postToGroups(userId, unitData, groups);
     results.groups = groupResults;
 
     for (const gr of groupResults) {
       if (gr.success) {
         await prisma.listing.upsert({
           where: { id: `grp-${unitId}-${gr.groupId}` },
-          update: {
-            status: "active",
-            lastPostedAt: new Date(),
-            nextPostAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-          },
-          create: {
-            id: `grp-${unitId}-${gr.groupId}`,
-            unitId,
-            platform: "group",
-            groupId: gr.groupId,
-            status: "active",
-            lastPostedAt: new Date(),
-            nextPostAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-          },
+          update: { status: "active", lastPostedAt: new Date(), nextPostAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+          create: { id: `grp-${unitId}-${gr.groupId}`, unitId, platform: "group", groupId: gr.groupId, status: "active", lastPostedAt: new Date(), nextPostAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
         });
       }
     }

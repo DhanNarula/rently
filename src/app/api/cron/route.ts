@@ -11,11 +11,7 @@ export async function GET(req: NextRequest) {
   const now = new Date();
 
   const dueListings = await prisma.listing.findMany({
-    where: {
-      status: "active",
-      nextPostAt: { lte: now },
-      unit: { isActive: true },
-    },
+    where: { status: "active", nextPostAt: { lte: now }, unit: { isActive: true } },
     include: { unit: true },
   });
 
@@ -34,7 +30,6 @@ export async function GET(req: NextRequest) {
     const fbAccount = await prisma.fbAccount.findUnique({ where: { clerkId } });
     if (!fbAccount?.sessionState) continue;
 
-    const sessionState = JSON.parse(fbAccount.sessionState);
     const groups = JSON.parse(fbAccount.groups);
 
     for (const listing of listings) {
@@ -57,18 +52,15 @@ export async function GET(req: NextRequest) {
         let success = false;
 
         if (listing.platform === "marketplace") {
-          const result = await postToMarketplace(sessionState, unitData);
+          const result = await postToMarketplace(clerkId, unitData);
           success = result.success;
           if (result.success && result.postId) {
-            await prisma.listing.update({
-              where: { id: listing.id },
-              data: { fbPostId: result.postId },
-            });
+            await prisma.listing.update({ where: { id: listing.id }, data: { fbPostId: result.postId } });
           }
         } else if (listing.platform === "group" && listing.groupId) {
           const group = groups.find((g: { id: string }) => g.id === listing.groupId);
           if (group) {
-            const groupResults = await postToGroups(sessionState, unitData, [group]);
+            const groupResults = await postToGroups(clerkId, unitData, [group]);
             success = groupResults[0]?.success || false;
           }
         }
@@ -84,11 +76,7 @@ export async function GET(req: NextRequest) {
 
         results.push({ listingId: listing.id, success });
       } catch (err) {
-        results.push({
-          listingId: listing.id,
-          success: false,
-          error: err instanceof Error ? err.message : "Unknown",
-        });
+        results.push({ listingId: listing.id, success: false, error: err instanceof Error ? err.message : "Unknown" });
       }
     }
   }

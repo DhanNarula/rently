@@ -38,6 +38,7 @@ export default function UnitPage({ params }: { params: Promise<{ id: string }> }
   const [posting, setPosting] = useState(false);
   const [videoLoading, setVideoLoading] = useState(false);
   const [error, setError] = useState("");
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [success, setSuccess] = useState("");
   const [fbConnected, setFbConnected] = useState<boolean | null>(null);
   const [postOptions, setPostOptions] = useState({ marketplace: true, groups: true });
@@ -77,15 +78,33 @@ export default function UnitPage({ params }: { params: Promise<{ id: string }> }
   }
 
   async function postToFacebook() {
-    setPosting(true); setError(""); setSuccess("");
+    setPosting(true); setError(""); setSuccess(""); setSessionExpired(false);
     try {
       const res = await fetch("/api/facebook", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unitId: id, postToMarketplace: postOptions.marketplace, postToGroups: postOptions.groups }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Posting failed");
-      const msgs: string[] = [];
-      if (data.marketplace) msgs.push(data.marketplace.success ? "✓ Posted to Marketplace" : `Marketplace: ${data.marketplace.error}`);
-      if (data.groups) { const ok = data.groups.filter((g: { success: boolean }) => g.success).length; msgs.push(`✓ ${ok}/${data.groups.length} groups`); }
-      flash(msgs.join(" · "));
+
+      const successes: string[] = [];
+      const failures: string[] = [];
+      let expired = false;
+
+      if (data.marketplace) {
+        if (data.marketplace.success) successes.push("Posted to Marketplace ✓");
+        else if (data.marketplace.error === "SESSION_EXPIRED") expired = true;
+        else failures.push(`Marketplace failed: ${data.marketplace.error}`);
+      }
+      if (data.groups) {
+        const ok = (data.groups as { success: boolean; error?: string }[]).filter((g) => g.success).length;
+        const fail = (data.groups as { success: boolean; error?: string }[]).filter((g) => !g.success);
+        if (ok > 0) successes.push(`${ok}/${data.groups.length} groups ✓`);
+        if (fail.some((g) => g.error === "SESSION_EXPIRED")) expired = true;
+        else if (fail.length > 0) failures.push(`${fail.length} group(s) failed: ${fail[0]?.error}`);
+      }
+
+      if (expired) setSessionExpired(true);
+      else if (failures.length > 0) setError(failures.join("\n"));
+      if (successes.length > 0) flash(successes.join(" · "));
+
       const refreshed = await fetch(`/api/units/${id}`).then((r) => r.json()); setUnit(refreshed);
     } catch (e) { setError(e instanceof Error ? e.message : "Posting failed"); }
     finally { setPosting(false); }
@@ -131,6 +150,17 @@ export default function UnitPage({ params }: { params: Promise<{ id: string }> }
       </div>
 
       {error && <div style={{ padding: "12px 16px", borderRadius: 12, background: "#fef2f2", border: "1px solid #fecaca", color: "#dc2626", fontSize: 13, marginBottom: 20 }}>{error}</div>}
+      {sessionExpired && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderRadius: 12, background: "linear-gradient(135deg,#fffbeb,#fef3c7)", border: "1px solid #fde68a", marginBottom: 20, gap: 16 }}>
+          <div>
+            <p style={{ fontSize: 13.5, fontWeight: 700, color: "#92400e", marginBottom: 2 }}>Facebook session expired</p>
+            <p style={{ fontSize: 12.5, color: "#a16207" }}>Go to Settings and click "Reconnect" to refresh your login.</p>
+          </div>
+          <Link href="/settings" style={{ textDecoration: "none", flexShrink: 0 }}>
+            <button style={{ padding: "9px 18px", borderRadius: 9, border: "none", background: "#d97706", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Reconnect →</button>
+          </Link>
+        </div>
+      )}
       {success && <div style={{ padding: "12px 16px", borderRadius: 12, background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#059669", fontSize: 13, marginBottom: 20 }}>{success}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>

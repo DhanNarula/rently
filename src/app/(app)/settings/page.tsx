@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface Group { id: string; name: string; }
 interface FbAccount { id: string; email: string; groups: Group[]; connected: boolean; }
@@ -9,55 +9,110 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
   return <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 16, ...style }}>{children}</div>;
 }
 
+type ConnectionStatus = "idle" | "launching" | "waiting" | "connected" | "error";
+
 export default function Settings() {
   const [account, setAccount] = useState<FbAccount | null>(null);
   const [loading, setLoading] = useState(true);
-  const [connecting, setConnecting] = useState(false);
+  const [status, setStatus] = useState<ConnectionStatus>("idle");
+  const [statusMsg, setStatusMsg] = useState("");
   const [savingGroups, setSavingGroups] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [groups, setGroups] = useState<Group[]>([]);
   const [newGroupId, setNewGroupId] = useState("");
   const [newGroupName, setNewGroupName] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollCountRef = useRef(0);
 
   useEffect(() => {
     fetch("/api/fb-account")
       .then((r) => r.json())
       .then((data) => {
-        if (data) { setAccount(data); setGroups(data.groups || []); }
+        if (data) {
+          setAccount(data);
+          setGroups(data.groups || []);
+          setStatus("connected");
+        }
         setLoading(false);
       });
+    return () => stopPolling();
   }, []);
 
-  const [connectError, setConnectError] = useState("");
-
-  function flash(msg: string, isErr = false) {
-    if (isErr) setError(msg); else setSuccess(msg);
-    setTimeout(() => { setError(""); setSuccess(""); }, 5000);
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    pollCountRef.current = 0;
   }
 
-  async function connectFacebook() {
-    setConnecting(true);
-    setConnectError("");
+  async function poll() {
+    pollCountRef.current += 1;
     try {
-      const res = await fetch("/api/fb-session", { method: "POST" });
+      const res = await fetch("/api/chrome-status");
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Connection failed");
-      const refreshed = await fetch("/api/fb-account").then((r) => r.json());
-      if (refreshed) { setAccount(refreshed); setGroups(refreshed.groups || []); }
-      flash("Facebook connected successfully!");
-    } catch (e) {
-      // Keep the error visible until the user retries — don't auto-dismiss
-      setConnectError(e instanceof Error ? e.message : "Connection failed");
-    } finally {
-      setConnecting(false);
+
+      if (data.chromeRunning && data.fbLoggedIn) {
+        stopPolling();
+        const refreshed = await fetch("/api/fb-account").then((r) => r.json());
+        if (refreshed) { setAccount(refreshed); setGroups(refreshed.groups || []); }
+        setStatus("connected");
+        return;
+      }
+
+      if (data.chromeRunning && !data.fbLoggedIn) {
+        setStatus("waiting");
+        return;
+      }
+
+      // Chrome not running yet
+      if (pollCountRef.current >= 15) {
+        stopPolling();
+        setStatus("error");
+        setStatusMsg("Chrome didn't launch. Try again or check that Google Chrome is installed.");
+      }
+    } catch {
+      // network error — keep waiting
     }
+  }
+
+  async function launchChrome() {
+    setStatus("launching");
+    setStatusMsg("");
+    stopPolling();
+
+    try {
+      const res = await fetch("/api/chrome-launch", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus("error");
+        setStatusMsg(data.error || "Failed to launch Chrome.");
+        return;
+      }
+    } catch {
+      setStatus("error");
+      setStatusMsg("Failed to launch Chrome. Is the dev server running locally?");
+      return;
+    }
+
+    // Start polling every 2s
+    pollCountRef.current = 0;
+    pollRef.current = setInterval(poll, 2000);
   }
 
   async function disconnect() {
     if (!confirm("Remove your Facebook connection? You'll need to reconnect to post listings.")) return;
     await fetch("/api/fb-account", { method: "DELETE" });
-    setAccount(null); setGroups([]);
+    setAccount(null);
+    setGroups([]);
+    setStatus("idle");
+    stopPolling();
+  }
+
+  function flash(msg: string, isErr = false) {
+    if (isErr) setError(msg); else setSuccess(msg);
+    setTimeout(() => { setError(""); setSuccess(""); }, 5000);
   }
 
   async function saveGroups() {
@@ -86,6 +141,8 @@ export default function Settings() {
     setNewGroupId(""); setNewGroupName("");
   }
 
+  if (loading) return <div style={{ padding: "60px 40px", textAlign: "center", color: "#94a3b8", fontSize: 14 }}>Loading…</div>;
+
   return (
     <div style={{ padding: "36px 40px", maxWidth: 720, margin: "0 auto" }}>
       <div style={{ marginBottom: 32 }}>
@@ -101,32 +158,31 @@ export default function Settings() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div>
             <p style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", letterSpacing: "-0.2px" }}>Facebook Account</p>
-            <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Used to post and auto-repost your listings</p>
+            <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Uses your real Chrome browser — no password sharing</p>
           </div>
-          {account && (
+          {status === "connected" && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 100, background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#059669", letterSpacing: "0.05em" }}>
               CONNECTED
             </span>
           )}
         </div>
 
-        {account ? (
-          /* Connected state */
+        {status === "connected" ? (
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "16px", borderRadius: 12, background: "#f0fdf4", border: "1px solid #bbf7d0", marginBottom: 20 }}>
               <div style={{ width: 40, height: 40, borderRadius: 12, background: "#dcfce7", border: "1px solid #86efac", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>✓</div>
               <div>
-                <p style={{ fontSize: 13.5, fontWeight: 600, color: "#15803d" }}>Facebook session active</p>
-                <p style={{ fontSize: 12, color: "#16a34a", marginTop: 2 }}>Your login is saved — Rently can post on your behalf without your password.</p>
+                <p style={{ fontSize: 13.5, fontWeight: 600, color: "#15803d" }}>Chrome connected · Facebook logged in</p>
+                <p style={{ fontSize: 12, color: "#16a34a", marginTop: 2 }}>Rently uses your running Chrome browser to post on your behalf.</p>
               </div>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button
-                onClick={connectFacebook}
-                disabled={connecting}
-                style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid #ddd6fe", background: "#faf5ff", color: "#7c3aed", fontSize: 13, fontWeight: 600, cursor: connecting ? "not-allowed" : "pointer" }}
+                onClick={launchChrome}
+                disabled={status !== "connected"}
+                style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid #ddd6fe", background: "#faf5ff", color: "#7c3aed", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
               >
-                {connecting ? "Opening browser…" : "Reconnect"}
+                Relaunch Chrome
               </button>
               <button
                 onClick={disconnect}
@@ -136,47 +192,54 @@ export default function Settings() {
               </button>
             </div>
           </div>
-        ) : connecting ? (
-          /* Waiting for login */
-          <div style={{ padding: "24px", borderRadius: 12, background: "#f5f3ff", border: "1px solid #ddd6fe", textAlign: "center" }}>
-            <div style={{ width: 48, height: 48, border: "3px solid #ddd6fe", borderTopColor: "#7c3aed", borderRadius: "50%", margin: "0 auto 16px", animation: "spin 1s linear infinite" }} />
-            <p style={{ fontSize: 14, fontWeight: 700, color: "#7c3aed", marginBottom: 8 }}>Chrome is open — log in to Facebook</p>
-            <p style={{ fontSize: 13, color: "#a78bfa", lineHeight: 1.6 }}>
-              A browser window has launched. Log into Facebook normally, including any 2FA. This dialog will update automatically when you're done.
-            </p>
-            <p style={{ fontSize: 11, color: "#c4b5fd", marginTop: 12 }}>Times out after 4 minutes.</p>
+        ) : status === "launching" ? (
+          <div style={{ padding: "28px 24px", borderRadius: 12, background: "#f5f3ff", border: "1px solid #ddd6fe", textAlign: "center" }}>
+            <div style={{ width: 44, height: 44, border: "3px solid #ddd6fe", borderTopColor: "#7c3aed", borderRadius: "50%", margin: "0 auto 16px", animation: "spin 1s linear infinite" }} />
+            <p style={{ fontSize: 14, fontWeight: 700, color: "#7c3aed", marginBottom: 6 }}>Chrome is launching…</p>
+            <p style={{ fontSize: 13, color: "#a78bfa", lineHeight: 1.6 }}>A Chrome window is opening with your Rently profile. It may take a few seconds.</p>
           </div>
-        ) : connectError ? (
-          /* Browser was closed / error — show retry */
+        ) : status === "waiting" ? (
+          <div style={{ padding: "28px 24px", borderRadius: 12, background: "#fffbeb", border: "1px solid #fde68a", textAlign: "center" }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🌐</div>
+            <p style={{ fontSize: 14, fontWeight: 700, color: "#92400e", marginBottom: 8 }}>Log into Facebook in that Chrome window</p>
+            <p style={{ fontSize: 13, color: "#b45309", lineHeight: 1.6 }}>
+              Chrome opened to facebook.com. Log in normally — including any 2FA. This page will update automatically once you're signed in.
+            </p>
+            <p style={{ fontSize: 11, color: "#d97706", marginTop: 14 }}>Already logged in? Give it a moment — we're checking every 2 seconds.</p>
+          </div>
+        ) : status === "error" ? (
           <div>
             <div style={{ padding: "16px", borderRadius: 12, background: "#fef2f2", border: "1px solid #fecaca", marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 12 }}>
               <span style={{ fontSize: 18, flexShrink: 0 }}>✕</span>
               <div>
-                <p style={{ fontSize: 13.5, fontWeight: 600, color: "#dc2626", marginBottom: 4 }}>Connection cancelled</p>
-                <p style={{ fontSize: 12.5, color: "#b91c1c", lineHeight: 1.5 }}>{connectError}</p>
+                <p style={{ fontSize: 13.5, fontWeight: 600, color: "#dc2626", marginBottom: 4 }}>Connection failed</p>
+                <p style={{ fontSize: 12.5, color: "#b91c1c", lineHeight: 1.5 }}>{statusMsg}</p>
               </div>
             </div>
             <button
-              onClick={connectFacebook}
+              onClick={launchChrome}
               style={{ width: "100%", padding: "14px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(124,58,237,0.25)" }}
             >
               Try Again →
             </button>
           </div>
         ) : (
-          /* Not connected */
+          /* idle — not connected */
           <div>
             <div style={{ padding: "14px 16px", borderRadius: 12, background: "#f8fafc", border: "1px solid #e2e8f0", marginBottom: 20 }}>
               <p style={{ fontSize: 13, color: "#475569", lineHeight: 1.7 }}>
-                <strong style={{ color: "#0f172a" }}>How it works:</strong> Clicking the button below opens a real Chrome window directly on your computer. You log into Facebook like normal — your credentials go straight to Facebook, never to our servers. Once you're in, we capture a session cookie and close the window. Done.
+                <strong style={{ color: "#0f172a" }}>How it works:</strong> Clicking below opens your real Chrome browser with a dedicated Rently profile. Log into Facebook once — your session is remembered. When you post listings, Rently uses that Chrome window to submit them. No passwords stored, ever.
               </p>
             </div>
             <button
-              onClick={connectFacebook}
+              onClick={launchChrome}
               style={{ width: "100%", padding: "14px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(124,58,237,0.25)" }}
             >
-              Launch Facebook Login →
+              Launch Rently Chrome →
             </button>
+            <p style={{ fontSize: 11, color: "#94a3b8", marginTop: 10, textAlign: "center" }}>
+              Requires Google Chrome installed and this app running locally
+            </p>
           </div>
         )}
       </Card>
@@ -214,8 +277,8 @@ export default function Settings() {
         </div>
 
         {groups.length > 0 && (
-          <button onClick={saveGroups} disabled={savingGroups || !account} style={{ width: "100%", marginTop: 16, padding: "11px 0", borderRadius: 10, border: "none", background: (savingGroups || !account) ? "#a78bfa" : "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 13.5, fontWeight: 600, cursor: (savingGroups || !account) ? "not-allowed" : "pointer" }}>
-            {savingGroups ? "Saving…" : !account ? "Connect Facebook first" : "Save Groups"}
+          <button onClick={saveGroups} disabled={savingGroups || status !== "connected"} style={{ width: "100%", marginTop: 16, padding: "11px 0", borderRadius: 10, border: "none", background: (savingGroups || status !== "connected") ? "#a78bfa" : "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 13.5, fontWeight: 600, cursor: (savingGroups || status !== "connected") ? "not-allowed" : "pointer" }}>
+            {savingGroups ? "Saving…" : status !== "connected" ? "Connect Facebook first" : "Save Groups"}
           </button>
         )}
       </Card>
