@@ -9,6 +9,16 @@ export async function GET() {
   const account = await prisma.fbAccount.findUnique({ where: { clerkId: userId } });
   if (!account || !account.sessionState) return NextResponse.json(null);
 
+  // Validate that sessionState contains real cookies (array with c_user cookie)
+  try {
+    const cookies = JSON.parse(account.sessionState) as Array<{ name: string }>;
+    if (!Array.isArray(cookies) || !cookies.some((c) => c.name === "c_user")) {
+      return NextResponse.json(null);
+    }
+  } catch {
+    return NextResponse.json(null);
+  }
+
   return NextResponse.json({
     id: account.id,
     email: account.email,
