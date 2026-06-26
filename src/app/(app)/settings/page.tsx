@@ -176,10 +176,13 @@ export default function Settings() {
         ) : status === "waiting" ? (
           <div>
             <div style={{ padding: "20px", borderRadius: 12, background: "#fffbeb", border: "1px solid #fde68a", marginBottom: 16 }}>
-              <p style={{ fontSize: 14, fontWeight: 700, color: "#92400e", marginBottom: 8 }}>Log into Facebook in the window that opened</p>
-              <p style={{ fontSize: 13, color: "#b45309", lineHeight: 1.6, marginBottom: 12 }}>
-                A browser window opened in a new tab — it's running on Browserbase's servers. Log into Facebook normally including any 2FA. This page updates automatically.
-              </p>
+              <p style={{ fontSize: 14, fontWeight: 700, color: "#92400e", marginBottom: 8 }}>Log into Facebook in the browser window</p>
+              <ol style={{ fontSize: 13, color: "#b45309", lineHeight: 2, marginBottom: 12, paddingLeft: 20 }}>
+                <li>Click <strong>"Open browser window"</strong> below</li>
+                <li>In that tab, type <strong>facebook.com</strong> in the address bar and press Enter</li>
+                <li>Log into Facebook (including any 2FA)</li>
+                <li>This page detects your login automatically — no need to come back here</li>
+              </ol>
               {liveViewUrl && (
                 <a
                   href={liveViewUrl}
@@ -187,7 +190,7 @@ export default function Settings() {
                   rel="noopener noreferrer"
                   style={{ display: "inline-block", padding: "8px 16px", borderRadius: 9, background: "#ffffff", border: "1px solid #fbbf24", color: "#92400e", fontSize: 12.5, fontWeight: 600, textDecoration: "none" }}
                 >
-                  Open Facebook window again ↗
+                  Open browser window ↗
                 </a>
               )}
             </div>

@@ -4,6 +4,8 @@ import { Browserbase } from "@browserbasehq/sdk";
 import { chromium } from "playwright";
 import { prisma } from "@/lib/prisma";
 
+export const maxDuration = 30;
+
 export async function GET(req: NextRequest) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -18,20 +20,24 @@ export async function GET(req: NextRequest) {
     if (session.status !== "RUNNING") {
       return NextResponse.json({ loggedIn: false, sessionEnded: true });
     }
+    if (!session.connectUrl) {
+      return NextResponse.json({ loggedIn: false, sessionEnded: true });
+    }
 
-    if (!session.connectUrl) return NextResponse.json({ loggedIn: false, sessionEnded: true });
     const browser = await chromium.connectOverCDP(session.connectUrl);
-    const contexts = browser.contexts();
-    if (!contexts.length) return NextResponse.json({ loggedIn: false });
 
-    const ctx = contexts[0];
-    const cookies = await ctx.cookies(["https://www.facebook.com"]);
+    // Use CDP directly — reads from the browser's actual cookie store,
+    // bypasses browser.contexts() which can return empty on keepAlive reconnect
+    const cdp = await browser.newBrowserCDPSession();
+    const { cookies } = await cdp.send("Network.getCookies", {
+      urls: ["https://www.facebook.com", "https://facebook.com"],
+    }) as { cookies: Array<{ name: string; value: string; domain: string; path: string; expires: number; httpOnly: boolean; secure: boolean; sameSite: string }> };
+
     const loggedIn =
-      cookies.some((c) => c.name === "c_user") && cookies.some((c) => c.name === "xs");
+      cookies.some((c) => c.name === "c_user") &&
+      cookies.some((c) => c.name === "xs");
 
     if (loggedIn) {
-      // Save the cookies to DB — used for every future post
-      const existing = await prisma.fbAccount.findUnique({ where: { clerkId: userId } });
       await prisma.fbAccount.upsert({
         where: { clerkId: userId },
         update: { sessionState: JSON.stringify(cookies), email: "connected" },
@@ -39,13 +45,14 @@ export async function GET(req: NextRequest) {
           clerkId: userId,
           email: "connected",
           sessionState: JSON.stringify(cookies),
-          groups: existing?.groups ?? "[]",
+          groups: "[]",
         },
       });
-
-      // End the login session — we have what we need
+      // End the Browserbase session — cookies are saved, no longer needed
       await browser.close();
     }
+    // If not logged in: let browser go out of scope (WebSocket closes),
+    // keepAlive keeps the Browserbase session alive for the next poll
 
     return NextResponse.json({ loggedIn });
   } catch (err) {
