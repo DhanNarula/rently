@@ -31,6 +31,7 @@ model Unit {
   sqft         Int?
   description  String
   title        String
+  propertyType String               @default("House")
   amenities    String               @default("[]")
   photos       String               @default("[]")
   videoUrl     String?

@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
     rent: unit.rent,
     bedrooms: unit.bedrooms,
     bathrooms: unit.bathrooms,
+    propertyType: unit.propertyType ?? "House",
     photos: JSON.parse(unit.photos),
   };
 

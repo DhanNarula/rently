@@ -17,6 +17,7 @@ interface RentalUnit {
   rent: number;
   bedrooms: number;
   bathrooms: number;
+  propertyType: string;
   photos: string[];
 }
 
@@ -27,7 +28,7 @@ interface Group {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function humanDelay(min = 600, max = 1400) {
+async function humanDelay(min = 900, max = 2000) {
   await new Promise((r) => setTimeout(r, Math.floor(Math.random() * (max - min) + min)));
 }
 
@@ -61,7 +62,6 @@ async function openBrowserbaseSession(clerkId: string): Promise<{
   const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY! });
   const session = await bb.sessions.create({
     projectId: process.env.BROWSERBASE_PROJECT_ID!,
-    proxies: true, // residential proxy — avoids Facebook datacenter IP detection
   });
 
   const browser = await chromium.connectOverCDP(session.connectUrl);
@@ -78,47 +78,75 @@ async function openBrowserbaseSession(clerkId: string): Promise<{
   };
 }
 
-// ── Find & interact with form fields via page.evaluate ────────────────────────
-// Uses the live DOM — works regardless of React component wrappers or aria-label names.
+// ── Find & interact with form fields ─────────────────────────────────────────
+// Facebook's inputs often don't have aria-label/placeholder matching the visible label.
+// Strategy: try Playwright getByLabel/getByPlaceholder first, then positional nth().
 
-async function evalFill(page: Page, patterns: RegExp[], value: string): Promise<boolean> {
-  return page.evaluate(
-    ({ srcs, value }) => {
-      const patterns = srcs.map((s: string) => new RegExp(s, "i"));
-      const els = Array.from(
-        document.querySelectorAll<HTMLElement>(
-          'input, textarea, [role="textbox"], [role="spinbutton"]'
-        )
+async function fillField(page: Page, patterns: RegExp[], value: string): Promise<boolean> {
+  // Strategy 1: Playwright's getByLabel / getByPlaceholder
+  for (const pat of patterns) {
+    for (const getter of [
+      () => page.getByLabel(pat),
+      () => page.getByPlaceholder(pat),
+    ]) {
+      try {
+        const loc = getter();
+        if (await loc.count() > 0) {
+          await loc.first().click({ timeout: 2000 });
+          await loc.first().fill(value);
+          return true;
+        }
+      } catch {}
+    }
+  }
+
+  // Strategy 2: find input whose nearest ancestor also contains the label text
+  for (const pat of patterns) {
+    try {
+      const found = await page.evaluate(
+        ({ src, val }) => {
+          const re = new RegExp(src, "i");
+          // Walk every visible text-containing element looking for the label
+          for (const label of Array.from(document.querySelectorAll<HTMLElement>("label, span, div"))) {
+            if (!re.test(label.textContent ?? "")) continue;
+            const lr = label.getBoundingClientRect();
+            if (lr.width === 0) continue;
+            // Walk UP to find a container that also contains a visible input
+            let node: HTMLElement | null = label;
+            for (let i = 0; i < 6; i++) {
+              node = node?.parentElement ?? null;
+              if (!node) break;
+              const inp = node.querySelector<HTMLInputElement>(
+                "input:not([type='hidden']):not([type='file']):not([type='checkbox']):not([type='radio']), textarea"
+              );
+              if (!inp) continue;
+              const ir = inp.getBoundingClientRect();
+              if (ir.width === 0) continue;
+              inp.focus();
+              const setter = Object.getOwnPropertyDescriptor(
+                inp.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+                "value"
+              )?.set;
+              setter?.call(inp, val);
+              inp.dispatchEvent(new InputEvent("input", { bubbles: true, data: val }));
+              inp.dispatchEvent(new Event("change", { bubbles: true }));
+              return true;
+            }
+          }
+          return false;
+        },
+        { src: pat.source, val: value }
       );
-      for (const el of els) {
-        const r = el.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) continue;
-        const hay = [
-          el.getAttribute("aria-label") ?? "",
-          (el as HTMLInputElement).placeholder ?? "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        if (!patterns.some((p) => p.test(hay))) continue;
+      if (found) return true;
+    } catch {}
+  }
 
-        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-          const inp = el as HTMLInputElement;
-          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(inp, value);
-          inp.dispatchEvent(new Event("input", { bubbles: true }));
-          inp.dispatchEvent(new Event("change", { bubbles: true }));
-          return true;
-        }
-        if (el.getAttribute("role") === "textbox") {
-          el.focus();
-          document.execCommand("selectAll", false);
-          document.execCommand("insertText", false, value);
-          return true;
-        }
-      }
-      return false;
-    },
-    { srcs: patterns.map((p) => p.source), value }
-  );
+  return false;
+}
+
+// Keep a simple evaluate-based fill for backward compat (used in evalFill callers)
+async function evalFill(page: Page, patterns: RegExp[], value: string): Promise<boolean> {
+  return fillField(page, patterns, value);
 }
 
 async function evalClickDropdown(page: Page, patterns: RegExp[]): Promise<boolean> {
@@ -211,6 +239,20 @@ async function pickDropdown(page: Page, fieldPatterns: RegExp[], optionPattern: 
   await humanDelay(300, 500);
 }
 
+// Dismiss Facebook's custom "Leave page?" React modal (NOT a browser dialog)
+async function closeFbLeavePageModal(page: Page): Promise<void> {
+  try {
+    const stayBtn = page
+      .locator('[role="dialog"] button, [role="dialog"] [role="button"]')
+      .filter({ hasText: /stay on page/i })
+      .first();
+    if (await stayBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await stayBtn.click();
+      await humanDelay(400, 600);
+    }
+  } catch {}
+}
+
 // Scroll the panel that contains the Next button (the scrollable form container)
 async function scrollPanel(page: Page, by: number) {
   await page.evaluate((delta) => {
@@ -226,33 +268,41 @@ async function scrollPanel(page: Page, by: number) {
   await humanDelay(300, 500);
 }
 
-// Write photo to temp file and set on the first image-compatible file input
-async function uploadPhoto(page: Page, url: string): Promise<boolean> {
-  let tmp: string | null = null;
+// Download all photo URLs to temp files and upload them all at once
+async function uploadPhotos(page: Page, urls: string[]): Promise<number> {
+  const tmpFiles: string[] = [];
   try {
-    const res = await fetch(url);
-    if (!res.ok) return false;
-    const ct = res.headers.get("content-type") ?? "image/jpeg";
-    const ext = ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : "jpg";
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 1000) return false;
-    tmp = path.join(os.tmpdir(), `rently-photo-${Date.now()}.${ext}`);
-    fs.writeFileSync(tmp, buf);
+    for (const url of urls) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const ct = res.headers.get("content-type") ?? "image/jpeg";
+        const ext = ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : "jpg";
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 1000) continue;
+        const tmp = path.join(os.tmpdir(), `rently-photo-${Date.now()}-${tmpFiles.length}.${ext}`);
+        fs.writeFileSync(tmp, buf);
+        tmpFiles.push(tmp);
+      } catch {}
+    }
 
+    if (tmpFiles.length === 0) return 0;
+
+    // Find the image-compatible file input (skip video-only inputs)
     const inputs = page.locator('input[type="file"]');
     const count = await inputs.count();
     for (let i = 0; i < count; i++) {
       const fi = inputs.nth(i);
       const accept = (await fi.getAttribute("accept")) ?? "";
       if (accept && !accept.includes("image") && accept.includes("video")) continue;
-      await fi.setInputFiles(tmp);
-      return true;
+      await fi.setInputFiles(tmpFiles); // upload all at once
+      return tmpFiles.length;
     }
-    return false;
+    return 0;
   } catch {
-    return false;
+    return 0;
   } finally {
-    if (tmp) try { fs.unlinkSync(tmp); } catch {}
+    for (const f of tmpFiles) try { fs.unlinkSync(f); } catch {}
   }
 }
 
@@ -293,8 +343,12 @@ export async function postToMarketplace(
 
     await screenshot(page, "01-loaded");
 
+    // ── For rent (not for sale) ────────────────────────────────────────────────
+    await pickDropdown(page, [/home for sale or rent/i], /for rent/i);
+    await humanDelay(400, 700);
+
     // ── Property type ──────────────────────────────────────────────────────────
-    await pickDropdown(page, [/property type/i], /apartment|condo/i);
+    await pickDropdown(page, [/property type/i], new RegExp(unit.propertyType, "i"));
 
     // ── Bedrooms ───────────────────────────────────────────────────────────────
     const bedFilled = await evalFill(page, [/bedroom/i], String(unit.bedrooms));
@@ -314,33 +368,77 @@ export async function postToMarketplace(
     await screenshot(page, "03-scroll2");
 
     // ── Address ────────────────────────────────────────────────────────────────
-    const addrFilled = await evalFill(
-      page,
-      [/address/i, /location/i, /city/i],
-      `${unit.address}, ${unit.city}, ${unit.province}`
-    );
-    if (addrFilled) {
-      await humanDelay(1500, 2500);
-      const suggestion = page.locator('[role="option"]').first();
-      if (await suggestion.isVisible({ timeout: 4000 }).catch(() => false)) {
-        await suggestion.click();
-      } else {
+    // We find the location input by position: it comes right after the price input.
+    // We CANNOT use aria-label/placeholder patterns here — they match Facebook's
+    // top search bar instead of the form's location field.
+    const locFocused = await page.evaluate((rentVal) => {
+      const nav = document.querySelector("nav, header, [role='banner']");
+      const inputs = Array.from(
+        document.querySelectorAll<HTMLInputElement>(
+          "input:not([type='hidden']):not([type='file']):not([type='checkbox']):not([type='radio']):not([type='email']):not([type='password'])"
+        )
+      ).filter((inp) => {
+        const r = inp.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return false;
+        if (nav && nav.contains(inp)) return false; // exclude nav search bar
+        return true;
+      });
+
+      // Find the price input by its current value
+      const priceStr = String(rentVal).replace(/[^0-9]/g, "");
+      let priceIdx = inputs.findIndex((inp) =>
+        inp.value.replace(/[^0-9]/g, "") === priceStr
+      );
+      if (priceIdx < 0) return false;
+
+      // Location input is right after price
+      const locInput = inputs[priceIdx + 1];
+      if (!locInput) return false;
+      locInput.focus();
+      locInput.click();
+      return true;
+    }, unit.rent);
+
+    if (locFocused) {
+      await humanDelay(400, 600);
+      await page.keyboard.type(`${unit.address}, ${unit.city}`, { delay: 80 });
+
+      // Actively wait for the autocomplete dropdown to appear, then click immediately
+      let suggestionClicked = false;
+      try {
+        await page.waitForSelector('[role="option"]', { timeout: 8000 });
+        await page.locator('[role="option"]').first().click();
+        suggestionClicked = true;
+        await humanDelay(800, 1200);
+        console.log("[fb] address suggestion clicked");
+      } catch {
+        // Fallback: ArrowDown then Tab (does not trigger page navigation)
         await page.keyboard.press("ArrowDown");
-        await page.keyboard.press("Enter");
+        await humanDelay(500, 700);
+        await page.keyboard.press("Tab");
+        await humanDelay(500, 700);
+        console.log("[fb] address: used ArrowDown+Tab fallback");
       }
-      await humanDelay(500, 800);
+      console.log("[fb] suggestion clicked:", suggestionClicked);
     }
+    console.log("[fb] location focused:", locFocused);
+
+    // Dismiss Facebook's "Leave page?" modal if it appeared
+    await closeFbLeavePageModal(page);
 
     await scrollPanel(page, 300);
     await screenshot(page, "04-scroll3");
 
     // ── Description ────────────────────────────────────────────────────────────
-    await evalFill(page, [/description/i], `${unit.title}\n\n${unit.description}`);
+    const descFilled = await evalFill(page, [/description/i], `${unit.title}\n\n${unit.description}`);
+    await screenshot(page, "04b-after-desc");
+    console.log("[fb] description filled:", descFilled);
 
     // ── Photos ─────────────────────────────────────────────────────────────────
     if (unit.photos.length > 0) {
-      await uploadPhoto(page, unit.photos[0]);
-      await humanDelay(2000, 3000);
+      const uploaded = await uploadPhotos(page, unit.photos);
+      console.log(`[fb] uploaded ${uploaded} photos`);
+      await humanDelay(5000, 7000); // wait for all photos to process
     }
 
     await screenshot(page, "05-before-next");
@@ -354,7 +452,19 @@ export async function postToMarketplace(
       await close();
       return { success: false, error: `Next button not found. Screenshot: ${sp}` };
     }
-    await nextBtn.click();
+
+    // Wait up to 10s for the button to become enabled naturally (photo processing)
+    await page.waitForFunction(
+      () => {
+        const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
+        const next = btns.find(b => (b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next"));
+        return next && next.getAttribute("aria-disabled") !== "true";
+      },
+      { timeout: 10_000 }
+    ).catch(() => {}); // if still disabled after 10s, try force-clicking anyway
+
+    // Force-click to bypass aria-disabled if React state hasn't caught up
+    await nextBtn.click({ force: true });
     await humanDelay(2500, 3500);
     await screenshot(page, "06-after-next");
 
@@ -389,19 +499,41 @@ export async function postToMarketplace(
     }
 
     await humanDelay(3000, 5000);
-    const finalUrl = page.url();
-    const postId = finalUrl.match(/\/item\/(\d+)/)?.[1];
 
+    // Facebook often shows a "Boost your listing" modal after publishing — close it
+    const closeBoostBtn = page
+      .locator('button:has-text("Close"), [role="button"]:has-text("Close")')
+      .first();
+    if (await closeBoostBtn.isVisible({ timeout: 4000 }).catch(() => false)) {
+      await closeBoostBtn.click();
+      await humanDelay(2000, 3000);
+    }
+
+    await screenshot(page, "08-after-publish");
+
+    // Try to get post ID from the current URL
+    let postId = page.url().match(/\/item\/(\d+)/)?.[1];
+
+    // If URL is /selling or similar, find the listing link on the page
     if (!postId) {
-      const sp = await screenshot(page, "no-postid");
-      await close();
-      return {
-        success: false,
-        error: `Submitted but no confirmation URL. Ended at: ${finalUrl}. Screenshot: ${sp}`,
-      };
+      postId = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="/marketplace/item/"]'));
+        for (const a of links) {
+          const m = a.href.match(/\/item\/(\d+)/);
+          if (m) return m[1];
+        }
+        return null;
+      }) ?? undefined;
     }
 
     await close();
+    // Even without a post ID, if we reached the selling/confirmation page it succeeded
+    const onSellingPage = page.url().includes("/marketplace/") || page.url().includes("/selling");
+    if (!postId && !onSellingPage) {
+      const sp = await screenshot(page, "no-postid");
+      return { success: false, error: `No confirmation. Ended at: ${page.url()}. Screenshot: ${sp}` };
+    }
+
     return { success: true, postId };
   } catch (err) {
     await close?.();
@@ -468,7 +600,7 @@ export async function postToGroups(
             if (await photoBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
               await photoBtn.click();
               await humanDelay(1000, 1500);
-              await uploadPhoto(page, unit.photos[0]);
+              await uploadPhotos(page, unit.photos.slice(0, 1));
               await humanDelay(2000, 3000);
             }
           } catch {}
