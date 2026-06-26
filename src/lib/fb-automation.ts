@@ -61,6 +61,7 @@ async function openBrowserbaseSession(clerkId: string): Promise<{
   const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY! });
   const session = await bb.sessions.create({
     projectId: process.env.BROWSERBASE_PROJECT_ID!,
+    proxies: true, // residential proxy — avoids Facebook datacenter IP detection
   });
 
   const browser = await chromium.connectOverCDP(session.connectUrl);

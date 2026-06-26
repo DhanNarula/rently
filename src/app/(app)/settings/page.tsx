@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 interface Group { id: string; name: string; }
 interface FbAccount { id: string; email: string; groups: Group[]; connected: boolean; }
@@ -9,14 +9,14 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
   return <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 16, ...style }}>{children}</div>;
 }
 
-type ConnectStatus = "idle" | "creating" | "waiting" | "connected" | "error";
+type ConnectStatus = "idle" | "importing" | "saving" | "connected" | "error";
 
 export default function Settings() {
   const [account, setAccount] = useState<FbAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<ConnectStatus>("idle");
-  const [liveViewUrl, setLiveViewUrl] = useState("");
-  const [sessionId, setSessionId] = useState("");
+  const [cUser, setCUser] = useState("");
+  const [xs, setXs] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [savingGroups, setSavingGroups] = useState(false);
   const [flashMsg, setFlashMsg] = useState("");
@@ -24,7 +24,6 @@ export default function Settings() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [newGroupId, setNewGroupId] = useState("");
   const [newGroupName, setNewGroupName] = useState("");
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     fetch("/api/fb-account")
@@ -33,65 +32,37 @@ export default function Settings() {
         if (data) { setAccount(data); setGroups(data.groups || []); setStatus("connected"); }
         setLoading(false);
       });
-    return () => stopPolling();
   }, []);
 
-  function stopPolling() {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-  }
-
-  async function poll(sid: string) {
-    try {
-      const res = await fetch(`/api/bb-status?sessionId=${sid}`);
-      const data = await res.json();
-
-      if (data.loggedIn) {
-        stopPolling();
-        const refreshed = await fetch("/api/fb-account").then((r) => r.json());
-        if (refreshed) { setAccount(refreshed); setGroups(refreshed.groups || []); }
-        setStatus("connected");
-        return;
-      }
-
-      if (data.sessionEnded) {
-        stopPolling();
-        setStatus("error");
-        setErrorMsg("The browser session expired. Click below to try again.");
-      }
-    } catch {
-      // network blip — keep polling
+  async function saveCookies() {
+    if (!cUser.trim() || !xs.trim()) {
+      setErrorMsg("Both values are required.");
+      return;
     }
-  }
-
-  async function connectFacebook() {
-    setStatus("creating");
+    setStatus("saving");
     setErrorMsg("");
-    stopPolling();
-
     try {
-      const res = await fetch("/api/bb-login", { method: "POST" });
+      const res = await fetch("/api/fb-cookies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ c_user: cUser.trim(), xs: xs.trim() }),
+      });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to start session");
-
-      setSessionId(data.sessionId);
-      setLiveViewUrl(data.liveViewUrl);
-      setStatus("waiting");
-
-      // Open the live view automatically
-      window.open(data.liveViewUrl, "_blank");
-
-      // Poll every 3 seconds
-      pollRef.current = setInterval(() => poll(data.sessionId), 3000);
+      if (!res.ok) throw new Error(data.error || "Failed to save");
+      const refreshed = await fetch("/api/fb-account").then((r) => r.json());
+      if (refreshed) { setAccount(refreshed); setGroups(refreshed.groups || []); }
+      setStatus("connected");
+      setCUser(""); setXs("");
     } catch (e) {
-      setStatus("error");
-      setErrorMsg(e instanceof Error ? e.message : "Connection failed");
+      setStatus("importing");
+      setErrorMsg(e instanceof Error ? e.message : "Failed to save cookies");
     }
   }
 
   async function disconnect() {
     if (!confirm("Remove your Facebook connection?")) return;
     await fetch("/api/fb-account", { method: "DELETE" });
-    setAccount(null); setGroups([]); setStatus("idle"); stopPolling();
+    setAccount(null); setGroups([]); setStatus("idle");
   }
 
   function flash(msg: string, isErr = false) {
@@ -142,7 +113,7 @@ export default function Settings() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div>
             <p style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", letterSpacing: "-0.2px" }}>Facebook Account</p>
-            <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Powered by Browserbase cloud browser — no local setup needed</p>
+            <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Connect using your existing Facebook session</p>
           </div>
           {status === "connected" && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 100, background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#059669", letterSpacing: "0.05em" }}>CONNECTED</span>
@@ -154,12 +125,12 @@ export default function Settings() {
             <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "16px", borderRadius: 12, background: "#f0fdf4", border: "1px solid #bbf7d0", marginBottom: 20 }}>
               <div style={{ width: 40, height: 40, borderRadius: 12, background: "#dcfce7", border: "1px solid #86efac", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>✓</div>
               <div>
-                <p style={{ fontSize: 13.5, fontWeight: 600, color: "#15803d" }}>Facebook connected via Browserbase</p>
-                <p style={{ fontSize: 12, color: "#16a34a", marginTop: 2 }}>Your session is saved. Rently will post automatically — no browser needs to be open.</p>
+                <p style={{ fontSize: 13.5, fontWeight: 600, color: "#15803d" }}>Facebook connected</p>
+                <p style={{ fontSize: 12, color: "#16a34a", marginTop: 2 }}>Your session is saved. Rently posts automatically using Browserbase — no browser needs to be open.</p>
               </div>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={connectFacebook} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid #ddd6fe", background: "#faf5ff", color: "#7c3aed", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              <button onClick={() => { setStatus("importing"); setErrorMsg(""); }} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid #ddd6fe", background: "#faf5ff", color: "#7c3aed", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                 Reconnect
               </button>
               <button onClick={disconnect} style={{ padding: "11px 20px", borderRadius: 10, border: "1px solid #fecaca", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
@@ -167,63 +138,66 @@ export default function Settings() {
               </button>
             </div>
           </div>
-        ) : status === "creating" ? (
-          <div style={{ padding: "28px 24px", borderRadius: 12, background: "#f5f3ff", border: "1px solid #ddd6fe", textAlign: "center" }}>
-            <div style={{ width: 44, height: 44, border: "3px solid #ddd6fe", borderTopColor: "#7c3aed", borderRadius: "50%", margin: "0 auto 16px", animation: "spin 1s linear infinite" }} />
-            <p style={{ fontSize: 14, fontWeight: 700, color: "#7c3aed", marginBottom: 6 }}>Starting cloud browser…</p>
-            <p style={{ fontSize: 13, color: "#a78bfa" }}>Spinning up a Browserbase session — takes a few seconds.</p>
-          </div>
-        ) : status === "waiting" ? (
+        ) : status === "importing" || status === "idle" ? (
           <div>
-            <div style={{ padding: "20px", borderRadius: 12, background: "#fffbeb", border: "1px solid #fde68a", marginBottom: 16 }}>
-              <p style={{ fontSize: 14, fontWeight: 700, color: "#92400e", marginBottom: 8 }}>Log into Facebook in the browser window</p>
-              <ol style={{ fontSize: 13, color: "#b45309", lineHeight: 2, marginBottom: 12, paddingLeft: 20 }}>
-                <li>Click <strong>"Open browser window"</strong> below</li>
-                <li>In that tab, type <strong>facebook.com</strong> in the address bar and press Enter</li>
-                <li>Log into Facebook (including any 2FA)</li>
-                <li>This page detects your login automatically — no need to come back here</li>
+            {/* How-to steps */}
+            <div style={{ padding: "20px", borderRadius: 12, background: "#f8fafc", border: "1px solid #e2e8f0", marginBottom: 20 }}>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", marginBottom: 12 }}>Copy 2 values from your Facebook session:</p>
+              <ol style={{ fontSize: 13, color: "#475569", lineHeight: 2.2, paddingLeft: 20, margin: 0 }}>
+                <li>Open <strong>facebook.com</strong> in Chrome (make sure you&apos;re logged in)</li>
+                <li>Press <kbd style={{ background: "#e2e8f0", padding: "1px 6px", borderRadius: 4, fontFamily: "monospace", fontSize: 12 }}>F12</kbd> to open DevTools</li>
+                <li>Click the <strong>Application</strong> tab → <strong>Cookies</strong> → <strong>https://www.facebook.com</strong></li>
+                <li>Find the row named <code style={{ background: "#eff6ff", padding: "1px 6px", borderRadius: 4, color: "#2563eb", fontSize: 12 }}>c_user</code> — copy its <strong>Value</strong> column</li>
+                <li>Find the row named <code style={{ background: "#eff6ff", padding: "1px 6px", borderRadius: 4, color: "#2563eb", fontSize: 12 }}>xs</code> — copy its <strong>Value</strong> column</li>
+                <li>Paste both below</li>
               </ol>
-              {liveViewUrl && (
-                <a
-                  href={liveViewUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ display: "inline-block", padding: "8px 16px", borderRadius: 9, background: "#ffffff", border: "1px solid #fbbf24", color: "#92400e", fontSize: 12.5, fontWeight: 600, textDecoration: "none" }}
-                >
-                  Open browser window ↗
-                </a>
-              )}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-              <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#7c3aed", animation: "pulse 1.5s ease-in-out infinite" }} />
-              <p style={{ fontSize: 12.5, color: "#64748b" }}>Watching for login — checking every 3 seconds…</p>
-            </div>
-          </div>
-        ) : status === "error" ? (
-          <div>
-            <div style={{ padding: "16px", borderRadius: 12, background: "#fef2f2", border: "1px solid #fecaca", marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 12 }}>
-              <span style={{ fontSize: 18, flexShrink: 0 }}>✕</span>
+
+            {errorMsg && (
+              <div style={{ padding: "10px 14px", borderRadius: 10, background: "#fef2f2", border: "1px solid #fecaca", color: "#dc2626", fontSize: 12.5, marginBottom: 14 }}>{errorMsg}</div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
               <div>
-                <p style={{ fontSize: 13.5, fontWeight: 600, color: "#dc2626", marginBottom: 4 }}>Connection failed</p>
-                <p style={{ fontSize: 12.5, color: "#b91c1c", lineHeight: 1.5 }}>{errorMsg}</p>
+                <label style={labelStyle}>c_user value</label>
+                <input
+                  value={cUser}
+                  onChange={(e) => setCUser(e.target.value)}
+                  placeholder="e.g. 100012345678901"
+                  style={inputStyle}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>xs value</label>
+                <input
+                  value={xs}
+                  onChange={(e) => setXs(e.target.value)}
+                  placeholder="e.g. AbCdEf12:34..."
+                  style={inputStyle}
+                />
               </div>
             </div>
-            <button onClick={connectFacebook} style={{ width: "100%", padding: "14px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(124,58,237,0.25)" }}>
-              Try Again →
-            </button>
-          </div>
-        ) : (
-          <div>
-            <div style={{ padding: "14px 16px", borderRadius: 12, background: "#f8fafc", border: "1px solid #e2e8f0", marginBottom: 20 }}>
-              <p style={{ fontSize: 13, color: "#475569", lineHeight: 1.7 }}>
-                <strong style={{ color: "#0f172a" }}>How it works:</strong> Clicking below spins up a secure cloud browser. A Facebook window opens in your browser — log in once, done. Rently saves your session and posts automatically from the cloud. No local browser needs to be running.
-              </p>
-            </div>
-            <button onClick={connectFacebook} style={{ width: "100%", padding: "14px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(124,58,237,0.25)" }}>
+
+            <button
+              onClick={saveCookies}
+              disabled={!cUser.trim() || !xs.trim()}
+              style={{ width: "100%", padding: "14px 0", borderRadius: 12, border: "none", background: (cUser.trim() && xs.trim()) ? "linear-gradient(135deg,#7c3aed,#6d28d9)" : "#e2e8f0", color: (cUser.trim() && xs.trim()) ? "#fff" : "#94a3b8", fontSize: 14, fontWeight: 700, cursor: (cUser.trim() && xs.trim()) ? "pointer" : "not-allowed", boxShadow: (cUser.trim() && xs.trim()) ? "0 4px 20px rgba(124,58,237,0.25)" : "none" }}
+            >
               Connect Facebook →
             </button>
+
+            {status === "idle" && (
+              <p style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 12, textAlign: "center", lineHeight: 1.6 }}>
+                These session cookies let Rently post on your behalf via a cloud browser. They are stored securely and never shared.
+              </p>
+            )}
           </div>
-        )}
+        ) : status === "saving" ? (
+          <div style={{ padding: "28px 24px", borderRadius: 12, background: "#f5f3ff", border: "1px solid #ddd6fe", textAlign: "center" }}>
+            <div style={{ width: 44, height: 44, border: "3px solid #ddd6fe", borderTopColor: "#7c3aed", borderRadius: "50%", margin: "0 auto 16px", animation: "spin 1s linear infinite" }} />
+            <p style={{ fontSize: 14, fontWeight: 700, color: "#7c3aed" }}>Saving your session…</p>
+          </div>
+        ) : null}
       </Card>
 
       {/* Rental Groups */}
@@ -281,11 +255,10 @@ export default function Settings() {
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
       `}</style>
     </div>
   );
 }
 
 const labelStyle: React.CSSProperties = { fontSize: 12, color: "#64748b", display: "block", marginBottom: 6, fontWeight: 500 };
-const inputStyle: React.CSSProperties = { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0", background: "#ffffff", color: "#0f172a", fontSize: 13.5, outline: "none", fontFamily: "inherit" };
+const inputStyle: React.CSSProperties = { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0", background: "#ffffff", color: "#0f172a", fontSize: 13.5, outline: "none", fontFamily: "inherit", boxSizing: "border-box" };
