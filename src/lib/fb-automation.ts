@@ -44,6 +44,8 @@ async function screenshot(page: Page, label: string): Promise<string> {
 }
 
 // Creates a Browserbase session, injects saved FB cookies, returns context + closer.
+// close() automatically saves all updated Facebook cookies back to the DB so the
+// session stays fresh without the user needing to re-paste cookies.
 async function openBrowserbaseSession(clerkId: string): Promise<{
   context: BrowserContext;
   close: () => Promise<void>;
@@ -73,6 +75,23 @@ async function openBrowserbaseSession(clerkId: string): Promise<{
   return {
     context: ctx,
     close: async () => {
+      try {
+        // Save all updated Facebook cookies back to DB before closing.
+        // Facebook refreshes cookie values on every visit — persisting them keeps
+        // the session alive without requiring the user to re-paste credentials.
+        const updatedCookies = await ctx.cookies([
+          "https://www.facebook.com",
+          "https://web.facebook.com",
+        ]);
+        if (updatedCookies.length > 0) {
+          await prisma.fbAccount.update({
+            where: { clerkId },
+            data: { sessionState: JSON.stringify(updatedCookies) },
+          });
+        }
+      } catch (e) {
+        console.warn("[fb] could not save updated cookies:", e);
+      }
       try { await browser.close(); } catch {}
     },
   };
@@ -233,10 +252,117 @@ async function pickDropdown(page: Page, fieldPatterns: RegExp[], optionPattern: 
   // Fall back to custom Facebook dropdown
   const opened = await evalClickDropdown(page, fieldPatterns);
   if (!opened) return;
-  await humanDelay(400, 800);
+  await humanDelay(700, 1200);
   const picked = await evalClickOption(page, optionPattern);
   if (!picked) await page.keyboard.press("Escape");
-  await humanDelay(300, 500);
+  await humanDelay(500, 800);
+}
+
+// Dedicated function to select "For Rent" on the Marketplace rental form.
+// Tries every strategy we know — this must never silently fail.
+async function selectForRent(page: Page): Promise<void> {
+  await screenshot(page, "00-before-rent");
+
+  // Strategy 1: Playwright selectOption on every visible select element.
+  // This works on native <select> regardless of CSS styling/hiding.
+  const selects = page.locator("select");
+  const selCount = await selects.count();
+  for (let i = 0; i < selCount; i++) {
+    try {
+      await selects.nth(i).selectOption({ label: "For Rent" });
+      console.log("[fb] For Rent: selectOption by label succeeded");
+      await humanDelay(700, 1000);
+      return;
+    } catch {}
+    try {
+      // Try common option values Facebook uses
+      for (const val of ["FOR_RENT", "for_rent", "rent", "RENT", "2"]) {
+        try { await selects.nth(i).selectOption(val); return; } catch {}
+      }
+    } catch {}
+  }
+
+  // Strategy 2: JS native setter — set value on any select whose options contain "rent" (not "sale")
+  const nativeSet = await page.evaluate(() => {
+    for (const sel of Array.from(document.querySelectorAll<HTMLSelectElement>("select"))) {
+      const rentOpt = Array.from(sel.options).find(
+        (o) => /rent/i.test(o.text) && !/sale/i.test(o.text)
+      );
+      if (!rentOpt) continue;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(sel, rentOpt.value);
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      sel.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      return true;
+    }
+    return false;
+  });
+  if (nativeSet) { await humanDelay(700, 1000); return; }
+
+  // Strategy 3: Click the dropdown trigger with Playwright text matching, then click option.
+  // Use getByText which is more reliable than evaluate-based text search.
+  const triggers = [
+    page.getByRole("combobox").filter({ hasText: /home for sale or rent/i }),
+    page.getByRole("button").filter({ hasText: /home for sale or rent/i }),
+    page.locator('[aria-haspopup]').filter({ hasText: /home for sale or rent/i }),
+  ];
+  for (const trigger of triggers) {
+    if (await trigger.count() > 0 && await trigger.first().isVisible({ timeout: 1500 }).catch(() => false)) {
+      await trigger.first().click();
+      await humanDelay(700, 1200);
+      break;
+    }
+  }
+
+  // Wait for options to appear and click "For Rent"
+  const rentOption = page.getByRole("option", { name: /for rent/i }).first();
+  if (await rentOption.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await rentOption.click();
+    console.log("[fb] For Rent: clicked via getByRole option");
+    await humanDelay(700, 1000);
+    return;
+  }
+
+  // Strategy 4: JS click on any visible option/menuitem containing "for rent" text
+  const jsClicked = await page.evaluate(() => {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>(
+      '[role="option"], [role="menuitem"], [role="listitem"], li, option'
+    ));
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      const text = (el.textContent ?? "").toLowerCase().trim();
+      if (text.includes("for rent") || (text.includes("rent") && !text.includes("sale"))) {
+        el.click();
+        return true;
+      }
+    }
+    return false;
+  });
+  if (jsClicked) { await humanDelay(700, 1000); return; }
+
+  // Strategy 5: mouse.click at the pixel coordinates of any element containing "for rent"
+  const pos = await page.evaluate(() => {
+    const all = Array.from(document.querySelectorAll<HTMLElement>("*"));
+    for (const el of all) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 30 || r.height < 10 || r.top < 50) continue;
+      const text = (el.textContent ?? "").toLowerCase().trim();
+      if (text === "for rent" || text === "rent") {
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+    }
+    return null;
+  });
+  if (pos) {
+    await page.mouse.click(pos.x, pos.y);
+    console.log("[fb] For Rent: clicked via mouse coordinates");
+    await humanDelay(700, 1000);
+    return;
+  }
+
+  console.warn("[fb] WARNING: could not select For Rent — all strategies failed");
+  await screenshot(page, "00-rent-select-failed");
 }
 
 // Dismiss Facebook's custom "Leave page?" React modal (NOT a browser dialog)
@@ -248,7 +374,7 @@ async function closeFbLeavePageModal(page: Page): Promise<void> {
       .first();
     if (await stayBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
       await stayBtn.click();
-      await humanDelay(400, 600);
+      await humanDelay(700, 1000);
     }
   } catch {}
 }
@@ -265,7 +391,7 @@ async function scrollPanel(page: Page, by: number) {
     }
     window.scrollBy(0, delta);
   }, by);
-  await humanDelay(300, 500);
+  await humanDelay(500, 900);
 }
 
 // Download all photo URLs to temp files and upload them all at once
@@ -327,7 +453,7 @@ export async function postToMarketplace(
     });
 
     // Confirm we're logged in (not redirected to login page)
-    await humanDelay(2000, 3000);
+    await humanDelay(3000, 4500);
     if (page.url().includes("/login") || page.url().includes("login.php")) {
       await close();
       return { success: false, error: "SESSION_EXPIRED" };
@@ -339,13 +465,13 @@ export async function postToMarketplace(
       .first()
       .waitFor({ timeout: 20_000 })
       .catch(() => {});
-    await humanDelay(1500, 2500);
+    await humanDelay(2500, 3500);
 
     await screenshot(page, "01-loaded");
 
     // ── For rent (not for sale) ────────────────────────────────────────────────
-    await pickDropdown(page, [/home for sale or rent/i], /for rent/i);
-    await humanDelay(400, 700);
+    await selectForRent(page);
+    await humanDelay(700, 1100);
 
     // ── Property type ──────────────────────────────────────────────────────────
     await pickDropdown(page, [/property type/i], new RegExp(unit.propertyType, "i"));
@@ -400,25 +526,83 @@ export async function postToMarketplace(
     }, unit.rent);
 
     if (locFocused) {
-      await humanDelay(400, 600);
-      await page.keyboard.type(`${unit.address}, ${unit.city}`, { delay: 80 });
+      await humanDelay(700, 1000);
+      await page.keyboard.type(`${unit.address}, ${unit.city}`, { delay: 120 });
+      await humanDelay(2500, 3500); // give autocomplete API time to respond
 
-      // Actively wait for the autocomplete dropdown to appear, then click immediately
+      await screenshot(page, "03b-address-typed");
+
+      const streetName = unit.address.split(",")[0].trim().toLowerCase();
       let suggestionClicked = false;
-      try {
-        await page.waitForSelector('[role="option"]', { timeout: 8000 });
-        await page.locator('[role="option"]').first().click();
-        suggestionClicked = true;
-        await humanDelay(800, 1200);
-        console.log("[fb] address suggestion clicked");
-      } catch {
-        // Fallback: ArrowDown then Tab (does not trigger page navigation)
-        await page.keyboard.press("ArrowDown");
-        await humanDelay(500, 700);
-        await page.keyboard.press("Tab");
-        await humanDelay(500, 700);
-        console.log("[fb] address: used ArrowDown+Tab fallback");
+
+      // Multiple attempts — the dropdown may not be visible on first check
+      for (let attempt = 0; attempt < 4 && !suggestionClicked; attempt++) {
+        if (attempt > 0) await humanDelay(1200, 1800);
+
+        // Strategy A: JS-based element click — tries all known suggestion selectors,
+        // filtered to elements whose text contains the street name
+        const jsClicked = await page.evaluate((street) => {
+          const candidates = [
+            '[role="option"]',
+            '[role="listbox"] > *',
+            '[role="listbox"] li',
+            '[role="listbox"] div',
+            'li[aria-selected]',
+            'ul li',
+          ].flatMap((sel) => Array.from(document.querySelectorAll<HTMLElement>(sel)));
+
+          for (const el of candidates) {
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0 || r.top < 50) continue;
+            const text = (el.textContent ?? "").toLowerCase();
+            if (text.includes(street) && text.length < 300) {
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        }, streetName);
+
+        if (jsClicked) {
+          suggestionClicked = true;
+          break;
+        }
+
+        // Strategy B: mouse.click at the pixel position of a matching visible element
+        // (more reliable than Playwright's .click() which checks enabled/visible state)
+        const pos = await page.evaluate((street) => {
+          const all = Array.from(document.querySelectorAll<HTMLElement>("*"));
+          for (const el of all) {
+            const r = el.getBoundingClientRect();
+            // Must look like a dropdown row: reasonable width/height, below the nav
+            if (r.width < 100 || r.height < 10 || r.height > 80 || r.top < 100) continue;
+            const text = (el.textContent ?? "").toLowerCase();
+            if (text.includes(street) && text.length < 200) {
+              return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+            }
+          }
+          return null;
+        }, streetName);
+
+        if (pos) {
+          await page.mouse.click(pos.x, pos.y);
+          suggestionClicked = true;
+          break;
+        }
       }
+
+      if (!suggestionClicked) {
+        // Last resort keyboard: ArrowDown highlights first suggestion, Enter confirms it
+        // (Enter is safe here because a suggestion is highlighted — it selects, not navigates)
+        await page.keyboard.press("ArrowDown");
+        await humanDelay(800, 1100);
+        await page.keyboard.press("Enter");
+        await humanDelay(1000, 1500);
+        await closeFbLeavePageModal(page);
+        console.log("[fb] address: used ArrowDown+Enter fallback");
+      }
+
+      await humanDelay(1200, 1800);
       console.log("[fb] suggestion clicked:", suggestionClicked);
     }
     console.log("[fb] location focused:", locFocused);
@@ -438,7 +622,7 @@ export async function postToMarketplace(
     if (unit.photos.length > 0) {
       const uploaded = await uploadPhotos(page, unit.photos);
       console.log(`[fb] uploaded ${uploaded} photos`);
-      await humanDelay(5000, 7000); // wait for all photos to process
+      await humanDelay(8000, 11000); // wait for all photos to process
     }
 
     await screenshot(page, "05-before-next");
@@ -453,19 +637,34 @@ export async function postToMarketplace(
       return { success: false, error: `Next button not found. Screenshot: ${sp}` };
     }
 
-    // Wait up to 10s for the button to become enabled naturally (photo processing)
+    // Wait up to 15s for the button to become enabled naturally (photo processing)
     await page.waitForFunction(
       () => {
         const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
-        const next = btns.find(b => (b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next"));
+        const next = btns.find((b) => b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next");
         return next && next.getAttribute("aria-disabled") !== "true";
       },
-      { timeout: 10_000 }
-    ).catch(() => {}); // if still disabled after 10s, try force-clicking anyway
+      { timeout: 15_000 }
+    ).catch(() => {});
 
-    // Force-click to bypass aria-disabled if React state hasn't caught up
-    await nextBtn.click({ force: true });
-    await humanDelay(2500, 3500);
+    // Try Playwright click first; if disabled, use JS event dispatch (bypasses aria-disabled)
+    const isEnabled = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
+      const next = btns.find((b) => b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next");
+      return next ? next.getAttribute("aria-disabled") !== "true" : false;
+    });
+
+    if (isEnabled) {
+      await nextBtn.click();
+    } else {
+      // JS dispatch bypasses aria-disabled — React still receives the click
+      await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
+        const next = btns.find((b) => b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next");
+        next?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+    }
+    await humanDelay(4000, 5500);
     await screenshot(page, "06-after-next");
 
     // ── Publish (click through any intermediate Next steps) ────────────────────
@@ -477,7 +676,7 @@ export async function postToMarketplace(
       if (await pub.isVisible({ timeout: 3000 }).catch(() => false)) {
         await pub.click();
         publishClicked = true;
-        await humanDelay(4000, 6000);
+        await humanDelay(6000, 9000);
         break;
       }
       const again = page
@@ -485,7 +684,7 @@ export async function postToMarketplace(
         .first();
       if (await again.isVisible({ timeout: 2000 }).catch(() => false)) {
         await again.click();
-        await humanDelay(2000, 3000);
+        await humanDelay(3000, 4500);
         await screenshot(page, `07-next-${i}`);
       } else {
         break;
@@ -498,7 +697,7 @@ export async function postToMarketplace(
       return { success: false, error: `Publish button not found. Screenshot: ${sp}` };
     }
 
-    await humanDelay(3000, 5000);
+    await humanDelay(5000, 7000);
 
     // Facebook often shows a "Boost your listing" modal after publishing — close it
     const closeBoostBtn = page
@@ -506,7 +705,7 @@ export async function postToMarketplace(
       .first();
     if (await closeBoostBtn.isVisible({ timeout: 4000 }).catch(() => false)) {
       await closeBoostBtn.click();
-      await humanDelay(2000, 3000);
+      await humanDelay(3000, 4500);
     }
 
     await screenshot(page, "08-after-publish");
@@ -567,7 +766,7 @@ export async function postToGroups(
           waitUntil: "domcontentloaded",
           timeout: 20_000,
         });
-        await humanDelay(2000, 3500);
+        await humanDelay(3000, 5000);
 
         const writeBox = page
           .locator([
@@ -578,7 +777,7 @@ export async function postToGroups(
           .first();
         if (await writeBox.isVisible({ timeout: 5000 }).catch(() => false)) {
           await writeBox.click();
-          await humanDelay(1000, 2000);
+          await humanDelay(1500, 2800);
         }
 
         const textArea = page.locator('div[role="textbox"][contenteditable="true"]').first();
@@ -590,7 +789,7 @@ export async function postToGroups(
         await textArea.click();
         await humanDelay();
         await textArea.fill(postText);
-        await humanDelay(1000, 2000);
+        await humanDelay(1500, 2800);
 
         if (unit.photos.length > 0) {
           try {
@@ -599,9 +798,9 @@ export async function postToGroups(
               .first();
             if (await photoBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
               await photoBtn.click();
-              await humanDelay(1000, 1500);
+              await humanDelay(1500, 2200);
               await uploadPhotos(page, unit.photos.slice(0, 1));
-              await humanDelay(2000, 3000);
+              await humanDelay(3000, 4500);
             }
           } catch {}
         }
@@ -611,7 +810,7 @@ export async function postToGroups(
           .first();
         if (await postBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
           await postBtn.click();
-          await humanDelay(3000, 5000);
+          await humanDelay(5000, 7000);
           results.push({ groupId: group.id, success: true });
         } else {
           const sp = await screenshot(page, `group-${group.id}`);
@@ -624,7 +823,7 @@ export async function postToGroups(
           error: err instanceof Error ? err.message : "Unknown",
         });
       }
-      await humanDelay(3000, 6000);
+      await humanDelay(5000, 8000);
     }
 
     await close();

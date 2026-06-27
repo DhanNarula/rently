@@ -40,6 +40,7 @@ export default function UnitPage({ params }: { params: Promise<{ id: string }> }
   const [error, setError] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
   const [success, setSuccess] = useState("");
+  const [confirmed, setConfirmed] = useState<{ marketplace: boolean; groups: number } | null>(null);
   const [fbConnected, setFbConnected] = useState<boolean | null>(null);
   const [postOptions, setPostOptions] = useState({ marketplace: true, groups: true });
   const [editingDesc, setEditingDesc] = useState(false);
@@ -78,32 +79,36 @@ export default function UnitPage({ params }: { params: Promise<{ id: string }> }
   }
 
   async function postToFacebook() {
-    setPosting(true); setError(""); setSuccess(""); setSessionExpired(false);
+    setPosting(true); setError(""); setSuccess(""); setSessionExpired(false); setConfirmed(null);
     try {
       const res = await fetch("/api/facebook", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unitId: id, postToMarketplace: postOptions.marketplace, postToGroups: postOptions.groups }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Posting failed");
 
-      const successes: string[] = [];
       const failures: string[] = [];
       let expired = false;
+      let marketplaceOk = false;
+      let groupsOk = 0;
 
       if (data.marketplace) {
-        if (data.marketplace.success) successes.push("Posted to Marketplace ✓");
+        if (data.marketplace.success) marketplaceOk = true;
         else if (data.marketplace.error === "SESSION_EXPIRED") expired = true;
         else failures.push(`Marketplace failed: ${data.marketplace.error}`);
       }
       if (data.groups) {
         const ok = (data.groups as { success: boolean; error?: string }[]).filter((g) => g.success).length;
         const fail = (data.groups as { success: boolean; error?: string }[]).filter((g) => !g.success);
-        if (ok > 0) successes.push(`${ok}/${data.groups.length} groups ✓`);
+        groupsOk = ok;
         if (fail.some((g) => g.error === "SESSION_EXPIRED")) expired = true;
         else if (fail.length > 0) failures.push(`${fail.length} group(s) failed: ${fail[0]?.error}`);
       }
 
       if (expired) setSessionExpired(true);
       else if (failures.length > 0) setError(failures.join("\n"));
-      if (successes.length > 0) flash(successes.join(" · "));
+
+      if (marketplaceOk || groupsOk > 0) {
+        setConfirmed({ marketplace: marketplaceOk, groups: groupsOk });
+      }
 
       const refreshed = await fetch(`/api/units/${id}`).then((r) => r.json()); setUnit(refreshed);
     } catch (e) { setError(e instanceof Error ? e.message : "Posting failed"); }
@@ -162,6 +167,24 @@ export default function UnitPage({ params }: { params: Promise<{ id: string }> }
         </div>
       )}
       {success && <div style={{ padding: "12px 16px", borderRadius: 12, background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#059669", fontSize: 13, marginBottom: 20 }}>{success}</div>}
+
+      {confirmed && (
+        <div style={{ padding: "20px 24px", borderRadius: 16, background: "linear-gradient(135deg,#f0fdf4,#dcfce7)", border: "1px solid #86efac", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: "#22c55e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>✓</div>
+          <div>
+            <p style={{ fontSize: 16, fontWeight: 800, color: "#15803d", letterSpacing: "-0.3px", marginBottom: 4 }}>
+              {confirmed.marketplace ? "Your listing is live on Facebook Marketplace!" : `Posted to ${confirmed.groups} rental group${confirmed.groups > 1 ? "s" : ""}!`}
+            </p>
+            <p style={{ fontSize: 13, color: "#16a34a", lineHeight: 1.5 }}>
+              {confirmed.marketplace && confirmed.groups > 0
+                ? `Confirmed on Marketplace and ${confirmed.groups} rental group${confirmed.groups > 1 ? "s" : ""}. Auto-reposting every 24h.`
+                : confirmed.marketplace
+                ? "Confirmed on Marketplace. Rently will auto-repost every 24h to keep it at the top of results."
+                : `Confirmed in ${confirmed.groups} group${confirmed.groups > 1 ? "s" : ""}. Auto-reposting every 24h.`}
+            </p>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {/* Photos */}
