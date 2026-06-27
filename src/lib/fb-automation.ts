@@ -102,7 +102,7 @@ async function openBrowserbaseSession(clerkId: string): Promise<{
 // Strategy: try Playwright getByLabel/getByPlaceholder first, then positional nth().
 
 async function fillField(page: Page, patterns: RegExp[], value: string): Promise<boolean> {
-  // Strategy 1: Playwright's getByLabel / getByPlaceholder
+  // Strategy 1: Playwright's getByLabel / getByPlaceholder — skip any match inside nav/header
   for (const pat of patterns) {
     for (const getter of [
       () => page.getByLabel(pat),
@@ -110,31 +110,40 @@ async function fillField(page: Page, patterns: RegExp[], value: string): Promise
     ]) {
       try {
         const loc = getter();
-        if (await loc.count() > 0) {
-          await loc.first().click({ timeout: 2000 });
-          await loc.first().fill(value);
+        const count = await loc.count();
+        for (let i = 0; i < count; i++) {
+          const el = loc.nth(i);
+          const inNav = await el.evaluate((node) => {
+            const nav = document.querySelector("nav, header, [role='banner']");
+            return nav ? nav.contains(node) : false;
+          }).catch(() => false);
+          if (inNav) continue;
+          if (!await el.isVisible().catch(() => false)) continue;
+          await el.click({ timeout: 2000 });
+          await el.fill(value);
           return true;
         }
       } catch {}
     }
   }
 
-  // Strategy 2: find input whose nearest ancestor also contains the label text
+  // Strategy 2: DOM traversal — find label text, walk up to nearby input, skip nav
   for (const pat of patterns) {
     try {
       const found = await page.evaluate(
         ({ src, val }) => {
           const re = new RegExp(src, "i");
-          // Walk every visible text-containing element looking for the label
+          const nav = document.querySelector("nav, header, [role='banner']");
           for (const label of Array.from(document.querySelectorAll<HTMLElement>("label, span, div"))) {
+            if (nav && nav.contains(label)) continue; // never fill from nav labels
             if (!re.test(label.textContent ?? "")) continue;
             const lr = label.getBoundingClientRect();
             if (lr.width === 0) continue;
-            // Walk UP to find a container that also contains a visible input
             let node: HTMLElement | null = label;
             for (let i = 0; i < 6; i++) {
               node = node?.parentElement ?? null;
               if (!node) break;
+              if (nav && nav.contains(node)) break; // walked into nav — bail
               const inp = node.querySelector<HTMLInputElement>(
                 "input:not([type='hidden']):not([type='file']):not([type='checkbox']):not([type='radio']), textarea"
               );
@@ -432,6 +441,89 @@ async function uploadPhotos(page: Page, urls: string[]): Promise<number> {
   }
 }
 
+// ── Repair pass: re-fill any blank or invalid fields before retrying Next ─────
+async function repairForm(page: Page, unit: RentalUnit): Promise<void> {
+  await screenshot(page, "repair-01-before");
+  console.log("[fb] repair: scanning for empty/error fields");
+
+  // Collect visible non-nav inputs that are empty or marked invalid
+  const issues = await page.evaluate(() => {
+    const nav = document.querySelector("nav, header, [role='banner']");
+    const results: Array<{ label: string; value: string; hasError: boolean }> = [];
+    const inputs = Array.from(document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+      "input:not([type='hidden']):not([type='file']):not([type='checkbox']):not([type='radio']):not([type='email']):not([type='password']), textarea, select"
+    ));
+    for (const inp of inputs) {
+      const r = inp.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      if (nav && nav.contains(inp)) continue;
+      const value = inp.value ?? "";
+      const hasError = inp.getAttribute("aria-invalid") === "true";
+      if (value.trim() !== "" && !hasError) continue;
+
+      // Determine label from aria-label, placeholder, or nearest ancestor text
+      let label = inp.getAttribute("aria-label") || inp.getAttribute("placeholder") || "";
+      if (!label && inp.id) {
+        label = document.querySelector(`label[for="${inp.id}"]`)?.textContent?.trim() ?? "";
+      }
+      if (!label) {
+        let node: HTMLElement | null = inp.parentElement;
+        for (let i = 0; i < 5 && node; i++) {
+          const t = (node.textContent ?? "").trim();
+          if (t && t.length < 80) { label = t.split("\n")[0].trim(); break; }
+          node = node.parentElement;
+        }
+      }
+      results.push({ label, value, hasError });
+    }
+    return results;
+  });
+
+  console.log("[fb] repair: issues found:", JSON.stringify(issues));
+
+  // Re-select For Rent if the dropdown is still showing the placeholder
+  const rentMissing = await page.evaluate(() => {
+    const nav = document.querySelector("nav, header, [role='banner']");
+    const els = Array.from(document.querySelectorAll<HTMLElement>(
+      '[role="combobox"], [role="button"], select'
+    ));
+    return els.some((el) => {
+      if (nav && nav.contains(el)) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return false;
+      return /home for sale or rent/i.test(el.textContent ?? "");
+    });
+  });
+  if (rentMissing) {
+    console.log("[fb] repair: re-selecting For Rent");
+    await selectForRent(page);
+    await humanDelay(700, 1100);
+  }
+
+  // Re-fill whichever required fields are empty/errored
+  for (const issue of issues) {
+    const lbl = issue.label.toLowerCase();
+    if (/bedroom/i.test(lbl) && !issue.value) {
+      const ok = await evalFill(page, [/bedroom/i], String(unit.bedrooms));
+      if (!ok) await pickDropdown(page, [/bedroom/i], new RegExp(`^${unit.bedrooms}\\b`));
+      await humanDelay(500, 800);
+    } else if (/bathroom/i.test(lbl) && !issue.value) {
+      const ok = await evalFill(page, [/bathroom/i], String(unit.bathrooms));
+      if (!ok) await pickDropdown(page, [/bathroom/i], new RegExp(`^${unit.bathrooms}\\b`));
+      await humanDelay(500, 800);
+    } else if (/price|month/i.test(lbl) && !issue.value) {
+      await evalFill(page, [/price/i, /month/i], String(unit.rent));
+      await humanDelay(500, 800);
+    } else if (/description/i.test(lbl) && !issue.value) {
+      await evalFill(page, [/description/i], `${unit.title}\n\n${unit.description}`);
+      await humanDelay(500, 800);
+    }
+  }
+
+  await humanDelay(2000, 3000);
+  await screenshot(page, "repair-02-after");
+}
+
 // ── Marketplace posting ───────────────────────────────────────────────────────
 
 export async function postToMarketplace(
@@ -469,29 +561,37 @@ export async function postToMarketplace(
 
     await screenshot(page, "01-loaded");
 
-    // ── For rent (not for sale) ────────────────────────────────────────────────
+    // ── 1. Property type (House / Apartment / etc.) ────────────────────────────
+    await pickDropdown(page, [/property type/i], new RegExp(unit.propertyType, "i"));
+    await humanDelay(700, 1100);
+
+    // ── 2. For Rent (not For Sale) ────────────────────────────────────────────
     await selectForRent(page);
     await humanDelay(700, 1100);
 
-    // ── Property type ──────────────────────────────────────────────────────────
-    await pickDropdown(page, [/property type/i], new RegExp(unit.propertyType, "i"));
+    // ── 3. Rental type (Entire place / Private room / etc.) ───────────────────
+    // This dropdown appears after "For Rent" is selected. Default: Entire place.
+    await pickDropdown(page, [/rental type/i, /listing type/i], /entire/i);
+    await humanDelay(700, 1100);
 
-    // ── Bedrooms ───────────────────────────────────────────────────────────────
+    await screenshot(page, "02-after-dropdowns");
+
+    // ── 4. Bedrooms ────────────────────────────────────────────────────────────
     const bedFilled = await evalFill(page, [/bedroom/i], String(unit.bedrooms));
     if (!bedFilled) await pickDropdown(page, [/bedroom/i], new RegExp(`^${unit.bedrooms}\\b`));
 
     await scrollPanel(page, 300);
-    await screenshot(page, "02-scroll1");
+    await screenshot(page, "03-scroll1");
 
-    // ── Bathrooms ──────────────────────────────────────────────────────────────
+    // ── 5. Bathrooms ───────────────────────────────────────────────────────────
     const bathFilled = await evalFill(page, [/bathroom/i], String(unit.bathrooms));
     if (!bathFilled) await pickDropdown(page, [/bathroom/i], new RegExp(`^${unit.bathrooms}\\b`));
 
-    // ── Rent ───────────────────────────────────────────────────────────────────
+    // ── 6. Price ───────────────────────────────────────────────────────────────
     await evalFill(page, [/price/i, /month/i, /rent/i], String(unit.rent));
 
     await scrollPanel(page, 300);
-    await screenshot(page, "03-scroll2");
+    await screenshot(page, "04-scroll2");
 
     // ── Address ────────────────────────────────────────────────────────────────
     // We find the location input by position: it comes right after the price input.
@@ -530,7 +630,7 @@ export async function postToMarketplace(
       await page.keyboard.type(`${unit.address}, ${unit.city}`, { delay: 120 });
       await humanDelay(2500, 3500); // give autocomplete API time to respond
 
-      await screenshot(page, "03b-address-typed");
+      await screenshot(page, "05-address-typed");
 
       const streetName = unit.address.split(",")[0].trim().toLowerCase();
       let suggestionClicked = false;
@@ -611,11 +711,11 @@ export async function postToMarketplace(
     await closeFbLeavePageModal(page);
 
     await scrollPanel(page, 300);
-    await screenshot(page, "04-scroll3");
+    await screenshot(page, "06-scroll3");
 
     // ── Description ────────────────────────────────────────────────────────────
     const descFilled = await evalFill(page, [/description/i], `${unit.title}\n\n${unit.description}`);
-    await screenshot(page, "04b-after-desc");
+    await screenshot(page, "07-after-desc");
     console.log("[fb] description filled:", descFilled);
 
     // ── Photos ─────────────────────────────────────────────────────────────────
@@ -625,7 +725,7 @@ export async function postToMarketplace(
       await humanDelay(8000, 11000); // wait for all photos to process
     }
 
-    await screenshot(page, "05-before-next");
+    await screenshot(page, "08-before-next");
 
     // ── Next ───────────────────────────────────────────────────────────────────
     const nextBtn = page
@@ -637,7 +737,13 @@ export async function postToMarketplace(
       return { success: false, error: `Next button not found. Screenshot: ${sp}` };
     }
 
-    // Wait up to 15s for the button to become enabled naturally (photo processing)
+    const isNextEnabled = () => page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
+      const next = btns.find((b) => b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next");
+      return next ? next.getAttribute("aria-disabled") !== "true" : false;
+    });
+
+    // Wait up to 15s for button to become enabled naturally (photo processing)
     await page.waitForFunction(
       () => {
         const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
@@ -647,17 +753,25 @@ export async function postToMarketplace(
       { timeout: 15_000 }
     ).catch(() => {});
 
-    // Try Playwright click first; if disabled, use JS event dispatch (bypasses aria-disabled)
-    const isEnabled = await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
-      const next = btns.find((b) => b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next");
-      return next ? next.getAttribute("aria-disabled") !== "true" : false;
-    });
+    // If still disabled, repair blank/invalid fields and wait again
+    if (!await isNextEnabled()) {
+      console.log("[fb] Next still disabled — running repair pass");
+      await repairForm(page, unit);
+      await page.waitForFunction(
+        () => {
+          const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
+          const next = btns.find((b) => b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next");
+          return next && next.getAttribute("aria-disabled") !== "true";
+        },
+        { timeout: 10_000 }
+      ).catch(() => {});
+    }
 
-    if (isEnabled) {
+    if (await isNextEnabled()) {
       await nextBtn.click();
     } else {
       // JS dispatch bypasses aria-disabled — React still receives the click
+      console.log("[fb] Next still disabled after repair — forcing JS click");
       await page.evaluate(() => {
         const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
         const next = btns.find((b) => b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next");
@@ -665,7 +779,7 @@ export async function postToMarketplace(
       });
     }
     await humanDelay(4000, 5500);
-    await screenshot(page, "06-after-next");
+    await screenshot(page, "09-after-next");
 
     // ── Publish (click through any intermediate Next steps) ────────────────────
     let publishClicked = false;
@@ -685,7 +799,7 @@ export async function postToMarketplace(
       if (await again.isVisible({ timeout: 2000 }).catch(() => false)) {
         await again.click();
         await humanDelay(3000, 4500);
-        await screenshot(page, `07-next-${i}`);
+        await screenshot(page, `10-next-${i}`);
       } else {
         break;
       }
