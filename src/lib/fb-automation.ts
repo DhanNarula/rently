@@ -577,15 +577,68 @@ export async function postToMarketplace(
     await screenshot(page, "02-after-dropdowns");
 
     // ── 4. Bedrooms ────────────────────────────────────────────────────────────
-    const bedFilled = await evalFill(page, [/bedroom/i], String(unit.bedrooms));
-    if (!bedFilled) await pickDropdown(page, [/bedroom/i], new RegExp(`^${unit.bedrooms}\\b`));
+    // Use exact FB aria-labels first, never fall back to generic "/bedroom/i" text
+    // search which can accidentally match the nav search bar or rental type dropdown.
+    const bedFilled = await evalFill(
+      page,
+      [/^number of bedrooms$/i, /^bedrooms$/i],
+      String(unit.bedrooms)
+    );
+    if (!bedFilled) {
+      // Positional fallback: fill the first visible non-nav number/text input
+      // that looks like a small-number field (value currently 0-10)
+      await page.evaluate((val) => {
+        const nav = document.querySelector("nav, header, [role='banner']");
+        const inputs = Array.from(document.querySelectorAll<HTMLInputElement>(
+          "input:not([type='hidden']):not([type='file']):not([type='checkbox']):not([type='radio']):not([type='email']):not([type='password'])"
+        )).filter((inp) => {
+          const r = inp.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) return false;
+          if (nav && nav.contains(inp)) return false;
+          // Must look like a bedroom count field: aria-label contains "bedroom"
+          const lbl = (inp.getAttribute("aria-label") ?? "").toLowerCase();
+          return lbl.includes("bedroom");
+        });
+        if (!inputs[0]) return false;
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+        setter?.call(inputs[0], val);
+        inputs[0].dispatchEvent(new InputEvent("input", { bubbles: true }));
+        inputs[0].dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }, String(unit.bedrooms));
+    }
+    console.log("[fb] bedrooms filled:", bedFilled);
 
     await scrollPanel(page, 300);
     await screenshot(page, "03-scroll1");
 
     // ── 5. Bathrooms ───────────────────────────────────────────────────────────
-    const bathFilled = await evalFill(page, [/bathroom/i], String(unit.bathrooms));
-    if (!bathFilled) await pickDropdown(page, [/bathroom/i], new RegExp(`^${unit.bathrooms}\\b`));
+    const bathFilled = await evalFill(
+      page,
+      [/^number of bathrooms$/i, /^bathrooms$/i],
+      String(unit.bathrooms)
+    );
+    if (!bathFilled) {
+      await page.evaluate((val) => {
+        const nav = document.querySelector("nav, header, [role='banner']");
+        const inputs = Array.from(document.querySelectorAll<HTMLInputElement>(
+          "input:not([type='hidden']):not([type='file']):not([type='checkbox']):not([type='radio']):not([type='email']):not([type='password'])"
+        )).filter((inp) => {
+          const r = inp.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) return false;
+          if (nav && nav.contains(inp)) return false;
+          const lbl = (inp.getAttribute("aria-label") ?? "").toLowerCase();
+          return lbl.includes("bathroom");
+        });
+        if (!inputs[0]) return false;
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+        setter?.call(inputs[0], val);
+        inputs[0].dispatchEvent(new InputEvent("input", { bubbles: true }));
+        inputs[0].dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }, String(unit.bathrooms));
+    }
+    console.log("[fb] bathrooms filled:", bathFilled);
 
     // ── 6. Price ───────────────────────────────────────────────────────────────
     await evalFill(page, [/price/i, /month/i, /rent/i], String(unit.rent));
@@ -737,7 +790,7 @@ export async function postToMarketplace(
       return { success: false, error: `Next button not found. Screenshot: ${sp}` };
     }
 
-    const isNextEnabled = () => page.evaluate(() => {
+    const isNextEnabled = () => page!.evaluate(() => {
       const btns = Array.from(document.querySelectorAll<HTMLElement>('[role="button"], button'));
       const next = btns.find((b) => b.textContent?.trim() === "Next" || b.getAttribute("aria-label") === "Next");
       return next ? next.getAttribute("aria-disabled") !== "true" : false;

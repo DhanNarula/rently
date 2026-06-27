@@ -73,6 +73,7 @@ export default function NewUnit() {
   const [form, setForm] = useState({
     address: "", city: "", province: "ON", postalCode: "",
     rent: "", bedrooms: 1, bathrooms: 1, sqft: "", availableFrom: "",
+    propertyType: "" as string,
     title: "", description: "", amenities: [] as string[], photos: [] as string[],
   });
 
@@ -246,6 +247,38 @@ export default function NewUnit() {
           </div>
 
           <div style={{ ...s.card, padding: "24px" }}>
+            <p style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Property Type</p>
+            <p style={{ fontSize: 12, color: "#94a3b8", marginBottom: 14 }}>This sets the correct category on Facebook Marketplace</p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+              {[
+                { value: "House", label: "House", icon: "🏠" },
+                { value: "Apartment", label: "Apartment", icon: "🏢" },
+                { value: "Townhouse", label: "Townhouse", icon: "🏘️" },
+              ].map(({ value, label, icon }) => {
+                const active = form.propertyType === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => set("propertyType", value)}
+                    style={{
+                      padding: "14px 10px", borderRadius: 12, textAlign: "center", cursor: "pointer",
+                      border: `2px solid ${active ? "#7c3aed" : "#e2e8f0"}`,
+                      background: active ? "rgba(124,58,237,0.06)" : "#fff",
+                      color: active ? "#7c3aed" : "#374151",
+                      fontWeight: active ? 700 : 400, fontSize: 13,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <div style={{ fontSize: 24, marginBottom: 6 }}>{icon}</div>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ ...s.card, padding: "24px" }}>
             <p style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 14 }}>Amenities</p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {AMENITY_OPTIONS.map(({ label, icon }) => {
@@ -259,7 +292,7 @@ export default function NewUnit() {
             </div>
           </div>
 
-          <button onClick={() => goNext(2, () => { if (!form.address || !form.city || !form.rent) { setError("Address, city, and rent are required."); return false; } return true; })} style={{ padding: "14px", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(124,58,237,0.25)" }}>
+          <button onClick={() => goNext(2, () => { if (!form.address || !form.city || !form.rent) { setError("Address, city, and rent are required."); return false; } if (!form.propertyType) { setError("Please select a property type."); return false; } return true; })} style={{ padding: "14px", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(124,58,237,0.25)" }}>
             Continue to Photos →
           </button>
         </div>

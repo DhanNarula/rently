@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
         sqft: body.sqft ? parseInt(body.sqft) : null,
         title: body.title,
         description: body.description,
+        propertyType: body.propertyType || "House",
         amenities: JSON.stringify(body.amenities || []),
         photos: JSON.stringify(body.photos || []),
         availableFrom: body.availableFrom ? new Date(body.availableFrom) : null,
