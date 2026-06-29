@@ -71,7 +71,8 @@ export default function MaintenancePage() {
   function setF(key: string, val: string) { setForm((f) => ({ ...f, [key]: val })); }
 
   async function handleSubmit() {
-    if (!form.unitId || !form.title) { setError("Unit and title are required."); return; }
+    if (!form.unitId) { setError("Please select a unit."); return; }
+    if (!form.title.trim()) { setError("Request title is required."); return; }
     setSaving(true); setError("");
     try {
       const res = await fetch("/api/maintenance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, cost: form.cost ? parseFloat(form.cost) : null }) });

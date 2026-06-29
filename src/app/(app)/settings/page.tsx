@@ -35,10 +35,9 @@ export default function Settings() {
   }, []);
 
   async function saveCookies() {
-    if (!cUser.trim() || !xs.trim()) {
-      setErrorMsg("Both values are required.");
-      return;
-    }
+    if (!cUser.trim() && !xs.trim()) { setErrorMsg("Both c_user and xs cookie values are required."); return; }
+    if (!cUser.trim()) { setErrorMsg("c_user value is required."); return; }
+    if (!xs.trim()) { setErrorMsg("xs value is required."); return; }
     setStatus("saving");
     setErrorMsg("");
     try {

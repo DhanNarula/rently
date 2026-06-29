@@ -1,22 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { convex, api } from "@/lib/convex";
 import { chromium } from "playwright";
 import { Browserbase } from "@browserbasehq/sdk";
 
 export const maxDuration = 120;
 
-// Visits facebook.com for every connected account so Facebook refreshes the session
-// cookies. The updated cookies are saved back to the DB, keeping sessions alive
-// without the user needing to re-paste credentials.
 export async function GET(req: NextRequest) {
   const secret = req.headers.get("x-cron-secret") || req.nextUrl.searchParams.get("secret");
   if (secret !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const accounts = await prisma.fbAccount.findMany({
-    where: { sessionState: { not: null } },
-  });
+  const accounts = await convex.query(api.fbAccounts.listAllWithSession, {});
 
   const results: { clerkId: string; ok: boolean; error?: string }[] = [];
 
@@ -48,21 +43,18 @@ export async function GET(req: NextRequest) {
         timeout: 30_000,
       });
 
-      // Let the page settle so Facebook has time to issue fresh cookies
       await new Promise((r) => setTimeout(r, 5000));
 
       const loggedIn = !page.url().includes("/login") && !page.url().includes("login.php");
 
-      // Save all refreshed cookies back regardless — even a logged-out visit
-      // refreshes device/tracking cookies that help with future logins
       const updatedCookies = await ctx.cookies([
         "https://www.facebook.com",
         "https://web.facebook.com",
       ]);
       if (updatedCookies.length > 0) {
-        await prisma.fbAccount.update({
-          where: { clerkId: account.clerkId },
-          data: { sessionState: JSON.stringify(updatedCookies) },
+        await convex.mutation(api.fbAccounts.updateSession, {
+          clerkId: account.clerkId,
+          sessionState: JSON.stringify(updatedCookies),
         });
       }
 

@@ -1,6 +1,9 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
+import { randomBytes } from "crypto";
+
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   const { userId } = await auth();
@@ -13,7 +16,8 @@ export async function POST(req: NextRequest) {
 
   const uploads = await Promise.all(
     files.map(async (file) => {
-      const blob = await put(`${userId}/${Date.now()}-${file.name}`, file, {
+      const uid = randomBytes(6).toString("hex");
+      const blob = await put(`${userId}/${uid}-${file.name}`, file, {
         access: "public",
       });
       return blob.url;

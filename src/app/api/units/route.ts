@@ -1,20 +1,15 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { convex, api } from "@/lib/convex";
 
 export async function GET() {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const user = await prisma.user.findUnique({ where: { clerkId: userId } });
+  const user = await convex.query(api.users.getByClerkId, { clerkId: userId });
   if (!user) return NextResponse.json([]);
 
-  const units = await prisma.unit.findMany({
-    where: { userId: user.id },
-    include: { listings: true },
-    orderBy: { createdAt: "desc" },
-  });
-
+  const units = await convex.query(api.units.listByUser, { userId: user.id });
   return NextResponse.json(units);
 }
 
@@ -25,31 +20,27 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    let user = await prisma.user.findUnique({ where: { clerkId: userId } });
-    if (!user) {
-      user = await prisma.user.create({
-        data: { clerkId: userId, email: body.email || `${userId}@placeholder.com` },
-      });
-    }
+    const user = await convex.mutation(api.users.getOrCreate, {
+      clerkId: userId,
+      email: body.email || `${userId}@placeholder.com`,
+    });
 
-    const unit = await prisma.unit.create({
-      data: {
-        userId: user.id,
-        address: body.address,
-        city: body.city,
-        province: body.province,
-        postalCode: body.postalCode || "",
-        rent: parseFloat(body.rent),
-        bedrooms: Math.round(Number(body.bedrooms)),
-        bathrooms: parseFloat(body.bathrooms),
-        sqft: body.sqft ? parseInt(body.sqft) : null,
-        title: body.title,
-        description: body.description,
-        propertyType: body.propertyType || "House",
-        amenities: JSON.stringify(body.amenities || []),
-        photos: JSON.stringify(body.photos || []),
-        availableFrom: body.availableFrom ? new Date(body.availableFrom) : null,
-      },
+    const unit = await convex.mutation(api.units.create, {
+      userId: user.id,
+      address: body.address,
+      city: body.city,
+      province: body.province,
+      postalCode: body.postalCode || "",
+      rent: parseFloat(body.rent),
+      bedrooms: Math.round(Number(body.bedrooms)),
+      bathrooms: parseFloat(body.bathrooms),
+      ...(body.sqft && { sqft: parseInt(body.sqft) }),
+      title: body.title,
+      description: body.description,
+      propertyType: body.propertyType || "House",
+      amenities: JSON.stringify(body.amenities || []),
+      photos: JSON.stringify(body.photos || []),
+      ...(body.availableFrom && { availableFrom: new Date(body.availableFrom).getTime() }),
     });
 
     return NextResponse.json(unit, { status: 201 });

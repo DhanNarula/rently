@@ -1,20 +1,14 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { convex, api } from "@/lib/convex";
 
 export async function GET() {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const user = await prisma.user.findUnique({ where: { clerkId: userId } });
+    const user = await convex.query(api.users.getByClerkId, { clerkId: userId });
     if (!user) return NextResponse.json([]);
-
-    const requests = await prisma.maintenanceRequest.findMany({
-      where: { unit: { userId: user.id } },
-      include: { unit: { select: { address: true, city: true } } },
-      orderBy: { createdAt: "desc" },
-    });
-
+    const requests = await convex.query(api.maintenance.listByUser, { userId: user.id });
     return NextResponse.json(requests);
   } catch (e) {
     console.error("GET /api/maintenance error:", e);
@@ -26,7 +20,7 @@ export async function POST(req: Request) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const user = await prisma.user.findUnique({ where: { clerkId: userId } });
+    const user = await convex.query(api.users.getByClerkId, { clerkId: userId });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     const body = await req.json();
@@ -36,20 +30,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "unitId and title are required" }, { status: 400 });
     }
 
-    const unit = await prisma.unit.findFirst({ where: { id: unitId, userId: user.id } });
-    if (!unit) return NextResponse.json({ error: "Unit not found" }, { status: 404 });
+    const unit = await convex.query(api.units.getById, { id: unitId });
+    if (!unit || unit.userId !== user.id) {
+      return NextResponse.json({ error: "Unit not found" }, { status: 404 });
+    }
 
-    const request = await prisma.maintenanceRequest.create({
-      data: {
-        unitId,
-        title,
-        description: description || null,
-        category: category || "general",
-        priority: priority || "medium",
-        vendor: vendor || null,
-        cost: cost ? parseFloat(cost) : null,
-      },
-      include: { unit: { select: { address: true, city: true } } },
+    const request = await convex.mutation(api.maintenance.create, {
+      unitId,
+      title,
+      ...(description && { description }),
+      category: category || "general",
+      priority: priority || "medium",
+      ...(vendor && { vendor }),
+      ...(cost !== undefined && cost !== null && { cost: parseFloat(cost) }),
     });
 
     return NextResponse.json(request, { status: 201 });

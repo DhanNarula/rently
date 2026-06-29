@@ -1,7 +1,7 @@
 import { chromium } from "playwright";
 import type { BrowserContext, Page } from "playwright";
 import { Browserbase } from "@browserbasehq/sdk";
-import { prisma } from "@/lib/prisma";
+import { convex, api } from "@/lib/convex";
 import path from "path";
 import os from "os";
 import fs from "fs";
@@ -50,7 +50,7 @@ async function openBrowserbaseSession(clerkId: string): Promise<{
   context: BrowserContext;
   close: () => Promise<void>;
 }> {
-  const account = await prisma.fbAccount.findUnique({ where: { clerkId } });
+  const account = await convex.query(api.fbAccounts.getByClerkId, { clerkId });
   if (!account?.sessionState) throw new Error("SESSION_EXPIRED");
 
   let cookies: object[];
@@ -84,9 +84,9 @@ async function openBrowserbaseSession(clerkId: string): Promise<{
           "https://web.facebook.com",
         ]);
         if (updatedCookies.length > 0) {
-          await prisma.fbAccount.update({
-            where: { clerkId },
-            data: { sessionState: JSON.stringify(updatedCookies) },
+          await convex.mutation(api.fbAccounts.updateSession, {
+            clerkId,
+            sessionState: JSON.stringify(updatedCookies),
           });
         }
       } catch (e) {

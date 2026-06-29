@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { convex, api } from "@/lib/convex";
 import { put } from "@vercel/blob";
 import path from "path";
 import fs from "fs";
@@ -87,11 +87,11 @@ export async function POST(req: NextRequest) {
   try {
     const { unitId } = await req.json();
 
-    const user = await prisma.user.findUnique({ where: { clerkId: userId } });
+    const user = await convex.query(api.users.getByClerkId, { clerkId: userId });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const unit = await prisma.unit.findFirst({ where: { id: unitId, userId: user.id } });
-    if (!unit) return NextResponse.json({ error: "Unit not found" }, { status: 404 });
+    const unit = await convex.query(api.units.getById, { id: unitId });
+    if (!unit || unit.userId !== user.id) return NextResponse.json({ error: "Unit not found" }, { status: 404 });
 
     const photos: string[] = JSON.parse(unit.photos);
     if (!photos.length) return NextResponse.json({ error: "No photos to make video from" }, { status: 400 });
@@ -206,7 +206,7 @@ export async function POST(req: NextRequest) {
         { access: "public", contentType: "video/mp4" }
       );
 
-      await prisma.unit.update({ where: { id: unitId }, data: { videoUrl: blob.url } });
+      await convex.mutation(api.units.update, { id: unitId, videoUrl: blob.url });
       return NextResponse.json({ videoUrl: blob.url });
 
     } finally {

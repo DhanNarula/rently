@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { convex, api } from "@/lib/convex";
 import { postToMarketplace, postToGroups } from "@/lib/fb-automation";
 
 export async function GET(req: NextRequest) {
@@ -8,26 +8,22 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const now = new Date();
-
-  const dueListings = await prisma.listing.findMany({
-    where: { status: "active", nextPostAt: { lte: now }, unit: { isActive: true } },
-    include: { unit: true },
-  });
+  const now = Date.now();
+  const dueListings = await convex.query(api.listings.getDueListings, {});
 
   const results: { listingId: string; success: boolean; error?: string }[] = [];
 
-  const byUser = new Map<string, typeof dueListings>();
+  // Group by clerkId so we fetch each user's fbAccount once
+  const byClerk = new Map<string, typeof dueListings>();
   for (const listing of dueListings) {
-    const user = await prisma.user.findUnique({ where: { id: listing.unit.userId } });
-    if (!user) continue;
-    const existing = byUser.get(user.clerkId) || [];
+    const key = listing.clerkId as string;
+    const existing = byClerk.get(key) || [];
     existing.push(listing);
-    byUser.set(user.clerkId, existing);
+    byClerk.set(key, existing);
   }
 
-  for (const [clerkId, listings] of byUser) {
-    const fbAccount = await prisma.fbAccount.findUnique({ where: { clerkId } });
+  for (const [clerkId, listings] of byClerk) {
+    const fbAccount = await convex.query(api.fbAccounts.getByClerkId, { clerkId });
     if (!fbAccount?.sessionState) continue;
 
     const groups = JSON.parse(fbAccount.groups);
@@ -35,7 +31,7 @@ export async function GET(req: NextRequest) {
     for (const listing of listings) {
       const unit = listing.unit;
       const unitData = {
-        id: unit.id,
+        id: unit.id as string,
         title: unit.title,
         description: unit.description,
         address: unit.address,
@@ -56,7 +52,10 @@ export async function GET(req: NextRequest) {
           const result = await postToMarketplace(clerkId, unitData);
           success = result.success;
           if (result.success && result.postId) {
-            await prisma.listing.update({ where: { id: listing.id }, data: { fbPostId: result.postId } });
+            await convex.mutation(api.listings.updateById, {
+              id: listing.id as string,
+              fbPostId: result.postId,
+            });
           }
         } else if (listing.platform === "group" && listing.groupId) {
           const group = groups.find((g: { id: string }) => g.id === listing.groupId);
@@ -66,18 +65,19 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        await prisma.listing.update({
-          where: { id: listing.id },
-          data: {
-            status: success ? "active" : "failed",
-            lastPostedAt: success ? now : undefined,
-            nextPostAt: success ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : undefined,
-          },
+        await convex.mutation(api.listings.updateById, {
+          id: listing.id as string,
+          status: success ? "active" : "failed",
+          ...(success && { lastPostedAt: now, nextPostAt: now + 24 * 60 * 60 * 1000 }),
         });
 
-        results.push({ listingId: listing.id, success });
+        results.push({ listingId: listing.id as string, success });
       } catch (err) {
-        results.push({ listingId: listing.id, success: false, error: err instanceof Error ? err.message : "Unknown" });
+        results.push({
+          listingId: listing.id as string,
+          success: false,
+          error: err instanceof Error ? err.message : "Unknown",
+        });
       }
     }
   }

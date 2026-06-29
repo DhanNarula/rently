@@ -1,11 +1,13 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { convex, api } from "@/lib/convex";
 
 async function getAuthedUnit(userId: string, id: string) {
-  const user = await prisma.user.findUnique({ where: { clerkId: userId } });
+  const user = await convex.query(api.users.getByClerkId, { clerkId: userId });
   if (!user) return null;
-  return prisma.unit.findFirst({ where: { id, userId: user.id }, include: { listings: true } });
+  const unit = await convex.query(api.units.getById, { id });
+  if (!unit || unit.userId !== user.id) return null;
+  return unit;
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -31,21 +33,23 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!unit) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     const body = await req.json();
-    const updated = await prisma.unit.update({
-      where: { id },
-      data: {
-        ...(body.title && { title: body.title }),
-        ...(body.description && { description: body.description }),
-        ...(body.rent && { rent: parseFloat(body.rent) }),
-        ...(body.bedrooms !== undefined && { bedrooms: Math.round(Number(body.bedrooms)) }),
-        ...(body.bathrooms !== undefined && { bathrooms: parseFloat(body.bathrooms) }),
-        ...(body.sqft && { sqft: parseInt(body.sqft) }),
-        ...(body.amenities && { amenities: JSON.stringify(body.amenities) }),
-        ...(body.photos && { photos: JSON.stringify(body.photos) }),
-        ...(body.videoUrl !== undefined && { videoUrl: body.videoUrl }),
-        ...(body.isActive !== undefined && { isActive: body.isActive }),
-        ...(body.availableFrom !== undefined && { availableFrom: body.availableFrom ? new Date(body.availableFrom) : null }),
-      },
+    const updated = await convex.mutation(api.units.update, {
+      id,
+      ...(body.title && { title: body.title }),
+      ...(body.description && { description: body.description }),
+      ...(body.rent && { rent: parseFloat(body.rent) }),
+      ...(body.bedrooms !== undefined && { bedrooms: Math.round(Number(body.bedrooms)) }),
+      ...(body.bathrooms !== undefined && { bathrooms: parseFloat(body.bathrooms) }),
+      ...(body.sqft && { sqft: parseInt(body.sqft) }),
+      ...(body.amenities && { amenities: JSON.stringify(body.amenities) }),
+      ...(body.photos && { photos: JSON.stringify(body.photos) }),
+      ...(body.videoUrl !== undefined && { videoUrl: body.videoUrl }),
+      ...(body.isActive !== undefined && { isActive: body.isActive }),
+      ...(body.availableFrom !== undefined && (
+        body.availableFrom
+          ? { availableFrom: new Date(body.availableFrom).getTime() }
+          : { clearAvailableFrom: true }
+      )),
     });
     return NextResponse.json(updated);
   } catch (e) {
@@ -61,7 +65,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     const { id } = await params;
     const unit = await getAuthedUnit(userId, id);
     if (!unit) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    await prisma.unit.delete({ where: { id } });
+    await convex.mutation(api.units.remove, { id });
     return NextResponse.json({ success: true });
   } catch (e) {
     console.error("DELETE /api/units/[id] error:", e);

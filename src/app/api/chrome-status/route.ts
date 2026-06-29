@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { convex, api } from "@/lib/convex";
 import { chromium } from "playwright";
 
 export async function GET() {
@@ -21,16 +21,12 @@ export async function GET() {
       cookies.some((c) => c.name === "c_user") && cookies.some((c) => c.name === "xs");
 
     if (fbLoggedIn) {
-      const existing = await prisma.fbAccount.findUnique({ where: { clerkId: userId } });
-      await prisma.fbAccount.upsert({
-        where: { clerkId: userId },
-        update: { sessionState: "cdp", email: "connected" },
-        create: {
-          clerkId: userId,
-          email: "connected",
-          sessionState: "cdp",
-          groups: existing?.groups ?? "[]",
-        },
+      const existing = await convex.query(api.fbAccounts.getByClerkId, { clerkId: userId });
+      await convex.mutation(api.fbAccounts.upsert, {
+        clerkId: userId,
+        email: "connected",
+        sessionState: "cdp",
+        groups: existing?.groups ?? "[]",
       });
     }
 

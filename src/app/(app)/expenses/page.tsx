@@ -51,7 +51,9 @@ export default function ExpensesPage() {
   function setF(key: string, val: string) { setForm((f) => ({ ...f, [key]: val })); }
 
   async function handleSubmit() {
-    if (!form.title || !form.amount) { setError("Title and amount are required."); return; }
+    if (!form.title.trim()) { setError("Expense title is required."); return; }
+    if (!form.amount) { setError("Amount is required."); return; }
+    if (parseFloat(form.amount) <= 0) { setError("Amount must be greater than $0."); return; }
     setSaving(true); setError("");
     try {
       const res = await fetch("/api/expenses", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, amount: parseFloat(form.amount), taxYear: new Date(form.date).getFullYear(), unitId: form.unitId || null, receiptUrl: form.receiptUrl || null }) });

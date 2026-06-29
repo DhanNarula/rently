@@ -122,7 +122,8 @@ export default function NewUnit() {
   }
 
   async function handleSubmit() {
-    if (!form.title || !form.description) { setError("Title and description required."); return; }
+    if (!form.title.trim()) { setError("Listing title is required."); return; }
+    if (!form.description.trim()) { setError("Listing description is required."); return; }
     setSaving(true); setError("");
     try {
       const res = await fetch("/api/units", {
@@ -292,7 +293,14 @@ export default function NewUnit() {
             </div>
           </div>
 
-          <button onClick={() => goNext(2, () => { if (!form.address || !form.city || !form.rent) { setError("Address, city, and rent are required."); return false; } if (!form.propertyType) { setError("Please select a property type."); return false; } return true; })} style={{ padding: "14px", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(124,58,237,0.25)" }}>
+          <button onClick={() => goNext(2, () => {
+            if (!form.address.trim()) { setError("Street address is required."); return false; }
+            if (!form.city.trim()) { setError("City is required."); return false; }
+            if (!form.rent) { setError("Monthly rent is required."); return false; }
+            if (parseFloat(form.rent) <= 0) { setError("Rent must be greater than $0."); return false; }
+            if (!form.propertyType) { setError("Please select a property type."); return false; }
+            return true;
+          })} style={{ padding: "14px", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#7c3aed,#6d28d9)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(124,58,237,0.25)" }}>
             Continue to Photos →
           </button>
         </div>
