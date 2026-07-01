@@ -64,6 +64,14 @@ async function openBrowserbaseSession(clerkId: string): Promise<{
   const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY! });
   const session = await bb.sessions.create({
     projectId: process.env.BROWSERBASE_PROJECT_ID!,
+    browserSettings: {
+      advancedStealth: true,
+      solveCaptchas: true,
+      os: "windows",
+      viewport: { width: 1440, height: 900 },
+    },
+    proxies: true,
+    timeout: 300,
   });
 
   const browser = await chromium.connectOverCDP(session.connectUrl);
@@ -539,12 +547,30 @@ export async function postToMarketplace(
 
     page = await session.context.newPage();
 
+    // Warm-up: land on Facebook homepage first so the session looks natural
+    await page.goto("https://www.facebook.com", {
+      waitUntil: "domcontentloaded",
+      timeout: 25_000,
+    });
+    await humanDelay(2500, 4000);
+
+    if (page.url().includes("/login") || page.url().includes("login.php")) {
+      await close();
+      return { success: false, error: "SESSION_EXPIRED" };
+    }
+
+    // Simulate a brief read of the feed before navigating
+    await page.evaluate(() => window.scrollBy(0, Math.random() * 400 + 150));
+    await humanDelay(1200, 2200);
+    await page.evaluate(() => window.scrollBy(0, -(Math.random() * 100 + 50)));
+    await humanDelay(700, 1300);
+
     await page.goto("https://www.facebook.com/marketplace/create/rental", {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
     });
 
-    // Confirm we're logged in (not redirected to login page)
+    // Confirm we're still logged in after navigation
     await humanDelay(3000, 4500);
     if (page.url().includes("/login") || page.url().includes("login.php")) {
       await close();
@@ -680,7 +706,7 @@ export async function postToMarketplace(
 
     if (locFocused) {
       await humanDelay(700, 1000);
-      await page.keyboard.type(`${unit.address}, ${unit.city}`, { delay: 120 });
+      await page.keyboard.type(`${unit.address}, ${unit.city}`, { delay: Math.floor(Math.random() * 80) + 70 });
       await humanDelay(2500, 3500); // give autocomplete API time to respond
 
       await screenshot(page, "05-address-typed");
@@ -926,6 +952,19 @@ export async function postToGroups(
 
     page = await session.context.newPage();
     const postText = `🏠 ${unit.title}\n\n💰 $${unit.rent}/month\n🛏 ${unit.bedrooms} bed | 🛁 ${unit.bathrooms} bath\n📍 ${unit.address}, ${unit.city}, ${unit.province}\n\n${unit.description}`;
+
+    // Warm-up: visit homepage before any group navigation
+    await page.goto("https://www.facebook.com", {
+      waitUntil: "domcontentloaded",
+      timeout: 25_000,
+    });
+    await humanDelay(2000, 3500);
+    if (page.url().includes("/login") || page.url().includes("login.php")) {
+      await close();
+      return groups.map((g) => ({ groupId: g.id, success: false, error: "SESSION_EXPIRED" }));
+    }
+    await page.evaluate(() => window.scrollBy(0, Math.random() * 300 + 100));
+    await humanDelay(800, 1500);
 
     for (const group of groups) {
       try {
